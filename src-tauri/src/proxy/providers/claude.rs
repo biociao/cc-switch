@@ -323,6 +323,7 @@ pub fn normalize_anthropic_messages_for_provider(
     changed |= normalize_deepseek_tool_choice_disable_thinking(body, provider);
     changed |= normalize_deepseek_thinking_auto_type(body, provider);
     changed |= normalize_server_tool_blocks_for_non_official(body, provider, api_format);
+    changed |= normalize_orphan_tool_pairing_for_non_official(body, provider, api_format);
     changed |= normalize_deepseek_thinking_disabled_strip_effort(body, provider);
     changed
 }
@@ -368,7 +369,7 @@ pub fn normalize_server_tool_blocks_for_non_official(
             } else if block_type.ends_with("_tool_result") {
                 // Plain client-side `tool_result` does NOT match this suffix
                 // (no second underscore) and stays untouched.
-                if let Some(text) = server_tool_result_text(&block) {
+                if let Some(text) = tool_result_content_text(&block) {
                     rewritten.push(json!({ "type": "text", "text": text }));
                 }
                 message_changed = true;
@@ -382,6 +383,201 @@ pub fn normalize_server_tool_blocks_for_non_official(
             // when every block of the message was dropped.
             if rewritten.is_empty() {
                 rewritten.push(json!({ "type": "text", "text": "(omitted server tool exchange)" }));
+            }
+            changed = true;
+        }
+        *content = rewritten;
+    }
+
+    changed
+}
+
+/// Placeholder content injected as a synthetic tool_result when the client
+/// history contains a tool_use whose result never arrived (e.g. the previous
+/// streaming response was interrupted after emitting the tool_use block).
+const ORPHAN_TOOL_RESULT_PLACEHOLDER: &str =
+    "[tool execution was interrupted or its result is unavailable]";
+
+/// Strict Anthropic-compatible gateways (e.g. MiniMax, Kimi for Coding)
+/// internally convert messages to OpenAI format and reject broken
+/// tool_use/tool_result pairing with 400s such as
+/// "an assistant message with 'tool_calls' must be followed by tool messages
+/// responding to each 'tool_call_id'". This happens when the client persists
+/// an interrupted turn: an assistant tool_use (id like `repl:112`) whose
+/// tool_result never arrived, or an orphan tool_result injected on resume.
+///
+/// For non-official endpoints, repair both directions:
+/// - orphan tool_use → inject a synthetic error tool_result into the following
+///   user message (creating one when the turn ends at the assistant message);
+/// - orphan tool_result → downgrade to a text block (dropped when empty).
+///
+/// Properly paired history and official api.anthropic.com traffic are untouched.
+pub fn normalize_orphan_tool_pairing_for_non_official(
+    body: &mut Value,
+    provider: &Provider,
+    api_format: &str,
+) -> bool {
+    if api_format.trim() != "anthropic" || is_anthropic_official_endpoint(provider) {
+        return false;
+    }
+
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let mut changed = false;
+
+    // Pass 1: orphan tool_use — assistant tool_use with no matching
+    // tool_result in the following user message.
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].get("role").and_then(Value::as_str) != Some("assistant") {
+            i += 1;
+            continue;
+        }
+
+        let tool_use_ids: Vec<String> = messages[i]
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+                    .filter_map(|b| b.get("id").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tool_use_ids.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        let next_is_user = messages
+            .get(i + 1)
+            .and_then(|m| m.get("role"))
+            .and_then(Value::as_str)
+            == Some("user");
+        let answered: std::collections::HashSet<String> = if next_is_user {
+            messages[i + 1]
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                        .filter_map(|b| {
+                            b.get("tool_use_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        let missing: Vec<&String> = tool_use_ids.iter().filter(|id| !answered.contains(*id)).collect();
+        if missing.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        let synthetic: Vec<Value> = missing
+            .iter()
+            .map(|id| {
+                json!({
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "is_error": true,
+                    "content": ORPHAN_TOOL_RESULT_PLACEHOLDER
+                })
+            })
+            .collect();
+
+        if next_is_user {
+            let message = &mut messages[i + 1];
+            match message.get_mut("content") {
+                Some(Value::Array(content)) => {
+                    let mut merged = synthetic;
+                    merged.append(content);
+                    *content = merged;
+                }
+                Some(Value::String(_)) => {
+                    let text = message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let mut merged = synthetic;
+                    merged.push(json!({ "type": "text", "text": text }));
+                    message["content"] = json!(merged);
+                }
+                _ => {
+                    message["content"] = json!(synthetic);
+                }
+            }
+        } else {
+            messages.insert(i + 1, json!({ "role": "user", "content": synthetic }));
+        }
+
+        changed = true;
+        i += 1;
+    }
+
+    // Pass 2: orphan tool_result — user tool_result with no matching tool_use
+    // in the immediately preceding assistant message (including tool_results
+    // injected into the first message on session resume).
+    for i in 0..messages.len() {
+        if messages[i].get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+
+        let previous_tool_use_ids: std::collections::HashSet<String> = if i > 0
+            && messages[i - 1].get("role").and_then(Value::as_str) == Some("assistant")
+        {
+            messages[i - 1]
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+                        .filter_map(|b| b.get("id").and_then(Value::as_str).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        let Some(content) = messages[i].get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+
+        let mut message_changed = false;
+        let mut rewritten = Vec::with_capacity(content.len());
+        for block in std::mem::take(content) {
+            let is_orphan = block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && !block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| previous_tool_use_ids.contains(id));
+            if is_orphan {
+                if let Some(text) = tool_result_content_text(&block) {
+                    rewritten.push(json!({ "type": "text", "text": text }));
+                }
+                message_changed = true;
+            } else {
+                rewritten.push(block);
+            }
+        }
+
+        if message_changed {
+            // Anthropic requires a non-empty content array; keep a placeholder
+            // when every block of the message was dropped.
+            if rewritten.is_empty() {
+                rewritten.push(json!({ "type": "text", "text": "(omitted orphan tool result)" }));
             }
             changed = true;
         }
@@ -436,7 +632,7 @@ fn server_tool_use_text(block: &Value) -> Option<String> {
     })
 }
 
-fn server_tool_result_text(block: &Value) -> Option<String> {
+fn tool_result_content_text(block: &Value) -> Option<String> {
     let content = block.get("content")?;
     let mut parts: Vec<String> = Vec::new();
     match content {
@@ -3208,6 +3404,190 @@ mod tests {
         let remaining = serde_json::to_string(&body).unwrap();
         assert!(!remaining.contains("server_tool_use"));
         assert!(!remaining.contains("web_search_tool_result"));
+    }
+
+    fn minimax_provider() -> Provider {
+        create_provider(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+                "ANTHROPIC_API_KEY": "test-key"
+            }
+        }))
+    }
+
+    #[test]
+    fn test_orphan_tool_use_gets_synthetic_tool_result() {
+        let mut body = json!({
+            "messages": [
+                { "role": "user", "content": "run it" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "repl:112", "name": "repl", "input": {} },
+                        { "type": "tool_use", "id": "toolu_ok", "name": "read", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_ok", "content": "done" },
+                        { "type": "text", "text": "continue" }
+                    ]
+                }
+            ]
+        });
+
+        let changed = normalize_orphan_tool_pairing_for_non_official(
+            &mut body,
+            &minimax_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let content = body["messages"][2]["content"].as_array().unwrap();
+        // Synthetic error tool_result is prepended; existing blocks stay.
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "repl:112");
+        assert_eq!(content[0]["is_error"], true);
+        assert_eq!(content[1]["tool_use_id"], "toolu_ok");
+        assert_eq!(content[2]["type"], "text");
+    }
+
+    #[test]
+    fn test_orphan_tool_use_at_history_end_inserts_user_message() {
+        let mut body = json!({
+            "messages": [
+                { "role": "user", "content": "run it" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "repl:112", "name": "repl", "input": {} }
+                    ]
+                }
+            ]
+        });
+
+        let changed = normalize_orphan_tool_pairing_for_non_official(
+            &mut body,
+            &minimax_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "repl:112");
+    }
+
+    #[test]
+    fn test_orphan_tool_result_downgraded_to_text() {
+        let mut body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_missing", "content": "resumed result" },
+                        { "type": "text", "text": "hello" }
+                    ]
+                }
+            ]
+        });
+
+        let changed = normalize_orphan_tool_pairing_for_non_official(
+            &mut body,
+            &minimax_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0], json!({ "type": "text", "text": "resumed result" }));
+        assert_eq!(content[1]["type"], "text");
+    }
+
+    #[test]
+    fn test_paired_history_not_modified() {
+        let mut body = json!({
+            "messages": [
+                { "role": "user", "content": "run it" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" }
+                    ]
+                }
+            ]
+        });
+        let original = body.clone();
+
+        let changed = normalize_orphan_tool_pairing_for_non_official(
+            &mut body,
+            &minimax_provider(),
+            "anthropic",
+        );
+
+        assert!(!changed);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn test_orphan_pairing_preserved_for_official_endpoint() {
+        let mut body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "repl:112", "name": "repl", "input": {} }
+                    ]
+                }
+            ]
+        });
+        let original = body.clone();
+        let provider = create_provider(json!({
+            "env": { "ANTHROPIC_BASE_URL": "https://api.anthropic.com", "ANTHROPIC_API_KEY": "test-key" }
+        }));
+
+        let changed =
+            normalize_orphan_tool_pairing_for_non_official(&mut body, &provider, "anthropic");
+
+        assert!(!changed);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn test_normalize_messages_pipeline_repairs_orphan_tool_use() {
+        let mut body = json!({
+            "model": "MiniMax-M2.7",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "repl:112", "name": "repl", "input": {} }
+                    ]
+                }
+            ]
+        });
+
+        let changed = normalize_anthropic_messages_for_provider(
+            &mut body,
+            &minimax_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["content"][0]["tool_use_id"], "repl:112");
     }
 
     #[test]
