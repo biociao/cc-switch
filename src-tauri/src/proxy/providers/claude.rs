@@ -36,9 +36,14 @@ const CODEX_OAUTH_CLIENT_VERSION: &str = "0.144.1";
 /// 供 handler/forwarder 外部使用的公开函数。
 /// 优先级：meta.apiFormat > settings_config.api_format > openrouter_compat_mode > 默认 "anthropic"
 pub fn get_claude_api_format(provider: &Provider) -> &'static str {
-    // 0) Codex OAuth 强制使用 openai_responses（不可被覆盖）
+    // 0) Managed Responses OAuth providers force their wire protocol. This is
+    // an invariant, not a preset default: editable metadata must not be able to
+    // send an Anthropic Messages body to a Responses-only upstream.
     if let Some(meta) = provider.meta.as_ref() {
-        if meta.provider_type.as_deref() == Some("codex_oauth") {
+        if matches!(
+            meta.provider_type.as_deref(),
+            Some("codex_oauth" | "xai_oauth")
+        ) {
             return "openai_responses";
         }
     }
@@ -317,8 +322,151 @@ pub fn normalize_anthropic_messages_for_provider(
         normalize_anthropic_tool_thinking_history_for_provider(body, provider, api_format);
     changed |= normalize_deepseek_tool_choice_disable_thinking(body, provider);
     changed |= normalize_deepseek_thinking_auto_type(body, provider);
+    changed |= normalize_server_tool_blocks_for_non_official(body, provider, api_format);
     changed |= normalize_deepseek_thinking_disabled_strip_effort(body, provider);
     changed
+}
+
+/// Anthropic's official API accepts server-side tool blocks in message history
+/// (`server_tool_use`, `web_search_tool_result`, ...), but stricter
+/// Anthropic-compatible gateways (e.g. Kimi for Coding) internally map them to
+/// OpenAI tool messages whose `tool_call_id` has no matching tool call — often
+/// an empty id because `web_search_tool_result` carries no `tool_use_id` —
+/// and reject the request with `tool_call_id  is not found`.
+///
+/// For non-official endpoints, downgrade these history blocks to plain text so
+/// retrieved content stays visible to the model; empty blocks are dropped.
+/// Official `api.anthropic.com` traffic passes through untouched.
+pub fn normalize_server_tool_blocks_for_non_official(
+    body: &mut Value,
+    provider: &Provider,
+    api_format: &str,
+) -> bool {
+    if api_format.trim() != "anthropic" || is_anthropic_official_endpoint(provider) {
+        return false;
+    }
+
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let mut changed = false;
+    for message in messages {
+        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+
+        let mut message_changed = false;
+        let mut rewritten = Vec::with_capacity(content.len());
+        for block in std::mem::take(content) {
+            let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+            if block_type == "server_tool_use" {
+                if let Some(text) = server_tool_use_text(&block) {
+                    rewritten.push(json!({ "type": "text", "text": text }));
+                }
+                message_changed = true;
+            } else if block_type.ends_with("_tool_result") {
+                // Plain client-side `tool_result` does NOT match this suffix
+                // (no second underscore) and stays untouched.
+                if let Some(text) = server_tool_result_text(&block) {
+                    rewritten.push(json!({ "type": "text", "text": text }));
+                }
+                message_changed = true;
+            } else {
+                rewritten.push(block);
+            }
+        }
+
+        if message_changed {
+            // Anthropic requires a non-empty content array; keep a placeholder
+            // when every block of the message was dropped.
+            if rewritten.is_empty() {
+                rewritten.push(json!({ "type": "text", "text": "(omitted server tool exchange)" }));
+            }
+            changed = true;
+        }
+        *content = rewritten;
+    }
+
+    changed
+}
+
+/// Anthropic official endpoint detection; requests without an explicit
+/// base_url also default to the official API.
+fn is_anthropic_official_endpoint(provider: &Provider) -> bool {
+    let settings = &provider.settings_config;
+    let base_url = settings
+        .get("env")
+        .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
+        .and_then(|v| v.as_str())
+        .or_else(|| settings.get("base_url").and_then(|v| v.as_str()))
+        .or_else(|| settings.get("baseURL").and_then(|v| v.as_str()))
+        .or_else(|| settings.get("apiEndpoint").and_then(|v| v.as_str()));
+
+    let Some(url) = base_url else {
+        return true;
+    };
+
+    let host = url
+        .trim()
+        .split("://")
+        .nth(1)
+        .unwrap_or_else(|| url.trim())
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+
+    host.eq_ignore_ascii_case("api.anthropic.com")
+}
+
+fn server_tool_use_text(block: &Value) -> Option<String> {
+    let name = block.get("name").and_then(Value::as_str)?;
+    let input = block
+        .get("input")
+        .filter(|v| !v.is_null())
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    Some(if input.is_empty() {
+        format!("[{name}]")
+    } else {
+        format!("[{name}] {input}")
+    })
+}
+
+fn server_tool_result_text(block: &Value) -> Option<String> {
+    let content = block.get("content")?;
+    let mut parts: Vec<String> = Vec::new();
+    match content {
+        Value::Array(items) => {
+            for item in items {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    parts.push(text.to_string());
+                    continue;
+                }
+                let title = item.get("title").and_then(Value::as_str);
+                let url = item.get("url").and_then(Value::as_str);
+                match (title, url) {
+                    (Some(t), Some(u)) => parts.push(format!("{t} ({u})")),
+                    (Some(t), None) => parts.push(t.to_string()),
+                    (None, Some(u)) => parts.push(u.to_string()),
+                    (None, None) => {}
+                }
+                if let Some(code) = item.get("error_code").and_then(Value::as_str) {
+                    parts.push(format!("[error: {code}]"));
+                }
+            }
+        }
+        Value::String(text) => parts.push(text.clone()),
+        _ => {}
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
 }
 
 fn normalize_anthropic_tool_thinking_history(body: &mut Value) -> bool {
@@ -483,12 +631,28 @@ pub fn transform_claude_request_for_api_format(
             // Codex OAuth (ChatGPT Plus/Pro 反代) 需要在请求体里强制 store: false
             // + include: ["reasoning.encrypted_content"]，由 transform 层统一处理。
             let codex_fast_mode = provider.codex_fast_mode_enabled();
-            super::transform_responses::anthropic_to_responses(
+            let mut result = super::transform_responses::anthropic_to_responses(
                 body,
                 cache_key,
                 is_codex_oauth,
                 codex_fast_mode,
-            )
+            )?;
+            if provider.is_xai_oauth() {
+                const REASONING_MARKER: &str = "reasoning.encrypted_content";
+                let mut include = result
+                    .get("include")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if !include
+                    .iter()
+                    .any(|item| item.as_str() == Some(REASONING_MARKER))
+                {
+                    include.push(json!(REASONING_MARKER));
+                }
+                result["include"] = json!(include);
+            }
+            Ok(result)
         }
         "openai_chat" => {
             let preserve_reasoning_content =
@@ -534,6 +698,7 @@ impl ClaudeAdapter {
     /// 根据 base_url 和 auth_mode 检测具体的供应商类型：
     /// - GitHubCopilot: meta.provider_type 为 github_copilot 或 base_url 包含 githubcopilot.com
     /// - CodexOAuth: meta.provider_type 为 codex_oauth
+    /// - XaiOAuth: meta.provider_type 为 xai_oauth
     /// - OpenRouter: base_url 包含 openrouter.ai
     /// - ClaudeAuth: auth_mode 为 bearer_only
     /// - Claude: 默认 Anthropic 官方
@@ -551,6 +716,10 @@ impl ClaudeAdapter {
         // 检测 Codex OAuth (ChatGPT Plus/Pro)
         if self.is_codex_oauth(provider) {
             return ProviderType::CodexOAuth;
+        }
+
+        if self.is_xai_oauth(provider) {
+            return ProviderType::XaiOAuth;
         }
 
         // 检测 GitHub Copilot
@@ -579,6 +748,10 @@ impl ClaudeAdapter {
             }
         }
         false
+    }
+
+    fn is_xai_oauth(&self, provider: &Provider) -> bool {
+        provider.is_xai_oauth()
     }
 
     /// 检测是否为 GitHub Copilot 供应商
@@ -759,6 +932,12 @@ impl ProviderAdapter for ClaudeAdapter {
             return Ok(super::CHATGPT_CODEX_BASE_URL.to_string());
         }
 
+        // xAI OAuth: ignore editable provider base URLs and always use the xAI
+        // API origin associated with the managed token.
+        if self.is_xai_oauth(provider) {
+            return Ok(super::XAI_API_BASE_URL.to_string());
+        }
+
         // 1. 从 env 中获取
         if let Some(env) = provider.settings_config.get("env") {
             if let Some(url) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
@@ -818,6 +997,13 @@ impl ProviderAdapter for ClaudeAdapter {
             ));
         }
 
+        if provider_type == ProviderType::XaiOAuth {
+            return Some(AuthInfo::new(
+                "xai_oauth_placeholder".to_string(),
+                AuthStrategy::XaiOAuth,
+            ));
+        }
+
         let key = self.extract_key(provider)?;
 
         match provider_type {
@@ -871,6 +1057,17 @@ impl ProviderAdapter for ClaudeAdapter {
         if base_url == super::CHATGPT_CODEX_BASE_URL {
             let _ = endpoint; // 忽略原始 endpoint
             return format!("{}/responses", super::CHATGPT_CODEX_BASE_URL);
+        }
+
+        // Defense in depth for callers that bypass endpoint rewriting.
+        if base_url == super::XAI_API_BASE_URL {
+            let query = endpoint.split_once('?').map(|(_, query)| query);
+            return match query {
+                Some(query) if !query.is_empty() => {
+                    format!("{}/responses?{query}", super::XAI_API_BASE_URL)
+                }
+                _ => format!("{}/responses", super::XAI_API_BASE_URL),
+            };
         }
 
         // NOTE:
@@ -941,6 +1138,9 @@ impl ProviderAdapter for ClaudeAdapter {
                     ),
                 ]
             }
+            AuthStrategy::XaiOAuth => {
+                vec![(HeaderName::from_static("authorization"), hv(&bearer)?)]
+            }
             AuthStrategy::GitHubCopilot => {
                 // 生成请求追踪 ID
                 let request_id = uuid::Uuid::new_v4().to_string();
@@ -999,6 +1199,10 @@ impl ProviderAdapter for ClaudeAdapter {
 
         // Codex OAuth 总是需要格式转换 (Anthropic → OpenAI Responses API)
         if self.is_codex_oauth(provider) {
+            return true;
+        }
+
+        if self.is_xai_oauth(provider) {
             return true;
         }
 
@@ -1457,6 +1661,64 @@ mod tests {
         let adapter = ClaudeAdapter::new();
         let url = adapter.build_url("https://api.anthropic.com", "/v1/messages");
         assert_eq!(url, "https://api.anthropic.com/v1/messages");
+    }
+
+    #[test]
+    fn xai_oauth_invariants_ignore_editable_format_and_base_url() {
+        let adapter = ClaudeAdapter::new();
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://attacker.example/anthropic",
+                    "ANTHROPIC_API_KEY": "user-edited"
+                }
+            }),
+            ProviderMeta {
+                provider_type: Some("xai_oauth".to_string()),
+                api_format: Some("anthropic".to_string()),
+                is_full_url: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(get_claude_api_format(&provider), "openai_responses");
+        assert_eq!(adapter.provider_type(&provider), ProviderType::XaiOAuth);
+        assert_eq!(
+            adapter.extract_base_url(&provider).unwrap(),
+            super::super::XAI_API_BASE_URL
+        );
+        assert!(adapter.needs_transform(&provider));
+        assert_eq!(
+            adapter
+                .extract_auth(&provider)
+                .expect("managed auth placeholder")
+                .strategy,
+            AuthStrategy::XaiOAuth
+        );
+        assert_eq!(
+            adapter.build_url(super::super::XAI_API_BASE_URL, "/v1/messages?beta=1"),
+            "https://api.x.ai/v1/responses?beta=1"
+        );
+
+        let transformed = transform_claude_request_for_api_format(
+            json!({
+                "model": "grok-4.5",
+                "max_tokens": 2048,
+                "thinking": { "type": "enabled", "budget_tokens": 20000 },
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+            &provider,
+            "openai_responses",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(transformed["reasoning"]["effort"], json!("high"));
+        assert_eq!(
+            transformed["include"],
+            json!(["reasoning.encrypted_content"])
+        );
+        assert!(transformed.get("store").is_none());
     }
 
     #[test]
@@ -2801,5 +3063,169 @@ mod tests {
 
         assert!(changed);
         assert_eq!(body["thinking"], json!({ "type": "adaptive" }));
+    }
+
+    fn kimi_for_coding_provider() -> Provider {
+        create_provider(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.kimi.com/coding",
+                "ANTHROPIC_API_KEY": "test-key"
+            }
+        }))
+    }
+
+    fn server_tool_history_body() -> serde_json::Value {
+        json!({
+            "model": "k3",
+            "messages": [
+                { "role": "user", "content": "search something" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "Search results for query: " },
+                        {
+                            "type": "server_tool_use",
+                            "id": "srvtoolu_1",
+                            "name": "web_search",
+                            "input": { "query": "rust async" }
+                        },
+                        { "type": "web_search_tool_result", "content": [] },
+                        {
+                            "type": "web_search_tool_result",
+                            "tool_use_id": "srvtoolu_1",
+                            "content": [
+                                {
+                                    "type": "web_search_result",
+                                    "title": "Async Book",
+                                    "url": "https://rust-lang.github.io/async-book/"
+                                }
+                            ]
+                        },
+                        { "type": "tool_use", "id": "tool_xxx", "name": "list_compute", "input": {} }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "tool_xxx", "content": "ok" }
+                    ]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn test_server_tool_blocks_rewritten_for_non_official_endpoint() {
+        let mut body = server_tool_history_body();
+
+        let changed = normalize_server_tool_blocks_for_non_official(
+            &mut body,
+            &kimi_for_coding_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let content = body["messages"][1]["content"].as_array().unwrap();
+        // text + server_tool_use→text + web_search_tool_result→text + tool_use
+        assert_eq!(content.len(), 4);
+        assert_eq!(content[1]["type"], "text");
+        assert!(content[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("web_search"));
+        assert_eq!(content[2]["type"], "text");
+        assert_eq!(
+            content[2]["text"],
+            "Async Book (https://rust-lang.github.io/async-book/)"
+        );
+        // Client-side tool_use / tool_result stay untouched.
+        assert_eq!(content[3]["type"], "tool_use");
+        assert_eq!(content[3]["id"], "tool_xxx");
+        assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+        // No *_tool_result / server_tool_use blocks remain anywhere.
+        let remaining = serde_json::to_string(&body).unwrap();
+        assert!(!remaining.contains("server_tool_use"));
+        assert!(!remaining.contains("web_search_tool_result"));
+    }
+
+    #[test]
+    fn test_server_tool_blocks_preserved_for_official_endpoint() {
+        let providers = vec![
+            create_provider(json!({
+                "env": { "ANTHROPIC_BASE_URL": "https://api.anthropic.com", "ANTHROPIC_API_KEY": "test-key" }
+            })),
+            // No base_url configured → defaults to the official API.
+            create_provider(json!({
+                "env": { "ANTHROPIC_API_KEY": "test-key" }
+            })),
+        ];
+
+        for provider in providers {
+            let mut body = server_tool_history_body();
+            let original = body.clone();
+
+            let changed = normalize_server_tool_blocks_for_non_official(
+                &mut body,
+                &provider,
+                "anthropic",
+            );
+
+            assert!(!changed);
+            assert_eq!(body, original);
+        }
+    }
+
+    #[test]
+    fn test_server_tool_blocks_skipped_for_non_anthropic_format() {
+        let mut body = server_tool_history_body();
+        let original = body.clone();
+
+        let changed = normalize_server_tool_blocks_for_non_official(
+            &mut body,
+            &kimi_for_coding_provider(),
+            "openai_chat",
+        );
+
+        assert!(!changed);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn test_empty_server_tool_blocks_leave_placeholder() {
+        let mut body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{ "type": "web_search_tool_result", "content": [] }]
+                }
+            ]
+        });
+
+        let changed = normalize_server_tool_blocks_for_non_official(
+            &mut body,
+            &kimi_for_coding_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+    }
+
+    #[test]
+    fn test_normalize_messages_pipeline_rewrites_server_tools_for_kimi() {
+        let mut body = server_tool_history_body();
+
+        let changed = normalize_anthropic_messages_for_provider(
+            &mut body,
+            &kimi_for_coding_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let remaining = serde_json::to_string(&body).unwrap();
+        assert!(!remaining.contains("server_tool_use"));
+        assert!(!remaining.contains("web_search_tool_result"));
     }
 }

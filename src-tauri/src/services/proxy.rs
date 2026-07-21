@@ -1572,6 +1572,19 @@ impl ProxyService {
         Ok((proxy_url, proxy_codex_base_url))
     }
 
+    /// Grok Build live 是否具备可接管的自定义模型表。
+    ///
+    /// 官方态 live（Grok CLI 自带 OAuth 登录、无 `[model.*]` 表）没有注入
+    /// 占位符的落点，且官方供应商本就禁止经代理接管（封号风险），调用方
+    /// 应跳过接管或直接报错。
+    fn grok_live_config_supports_takeover(config: &Value) -> bool {
+        config
+            .get("config")
+            .and_then(Value::as_str)
+            .and_then(crate::grok_config::extract_model_config)
+            .is_some()
+    }
+
     fn apply_grok_takeover_fields(config: &mut Value, proxy_base_url: &str) -> Result<(), String> {
         let config_toml = config
             .get("config")
@@ -1643,9 +1656,13 @@ impl ProxyService {
 
         // Grok Build: keep its own provider namespace while reusing Responses forwarding.
         if let Ok(mut live_config) = self.read_grok_live() {
-            Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
-            self.write_grok_live(&live_config)?;
-            log::info!("Grok Build Live 配置已接管，代理地址: {proxy_grok_base_url}");
+            if Self::grok_live_config_supports_takeover(&live_config) {
+                Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
+                self.write_grok_live(&live_config)?;
+                log::info!("Grok Build Live 配置已接管，代理地址: {proxy_grok_base_url}");
+            } else {
+                log::info!("Grok Build Live 处于官方登录态（无自定义模型表），跳过代理接管");
+            }
         }
 
         Ok(())
@@ -1700,6 +1717,14 @@ impl ProxyService {
             }
             AppType::GrokBuild => {
                 let mut live_config = self.read_grok_live()?;
+                if !Self::grok_live_config_supports_takeover(&live_config) {
+                    return Err(
+                        "Grok Build 当前为官方登录态（无自定义模型表），官方供应商不支持代理接管 \
+                         (Grok Build is using the official login without a custom model table; \
+                         official providers cannot be taken over by the proxy)"
+                            .to_string(),
+                    );
+                }
                 Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
                 self.write_grok_live(&live_config)?;
                 log::info!("Grok Build Live 配置已接管，代理地址: {proxy_grok_base_url}");
@@ -1771,8 +1796,14 @@ impl ProxyService {
             }
             AppType::GrokBuild => {
                 if let Ok(mut live_config) = self.read_grok_live() {
-                    Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
-                    let _ = self.write_grok_live(&live_config);
+                    if Self::grok_live_config_supports_takeover(&live_config) {
+                        Self::apply_grok_takeover_fields(&mut live_config, &proxy_grok_base_url)?;
+                        let _ = self.write_grok_live(&live_config);
+                    } else {
+                        log::info!(
+                            "Grok Build Live 处于官方登录态（无自定义模型表），跳过代理接管"
+                        );
+                    }
                 }
             }
             _ => {}
@@ -2367,6 +2398,13 @@ impl ProxyService {
         app_type: &str,
         provider: &Provider,
     ) -> Result<(), String> {
+        // 聚合供应商的 settings_config 是占位空配置，不含可直写的上游端点与
+        // 凭据。若用它覆盖备份，关闭接管时会把 `{}` 恢复进 Live，导致 Claude
+        // Code 无法连接。保留上一份常规供应商的备份作为恢复来源。
+        if provider.is_aggregate() {
+            log::info!("{app_type} 目标为聚合供应商，保留现有 Live 备份（热切换）");
+            return Ok(());
+        }
         let app_type_enum =
             AppType::from_str(app_type).map_err(|_| format!("未知的应用类型: {app_type}"))?;
         let mut effective_settings =
@@ -3395,6 +3433,83 @@ mod tests {
         assert_env_str(env, "ANTHROPIC_BASE_URL", Some("http://127.0.0.1:15721"));
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn hot_switch_to_aggregate_preserves_existing_live_backup() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let target = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.p1.example",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-p1"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &target)
+            .expect("save target provider");
+
+        let mut aggregate = Provider::with_id(
+            "agg".to_string(),
+            "Aggregate".to_string(),
+            // 聚合供应商的 settings_config 是占位空配置
+            json!({}),
+            None,
+        );
+        aggregate.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                sonnet: Some(AggregateRoute {
+                    provider_id: "p1".to_string(),
+                    model: "some-model".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("claude", &aggregate)
+            .expect("save aggregate provider");
+
+        db.set_current_provider("claude", "p1")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
+            .expect("set local current provider");
+
+        // 接管开启时留下的可恢复备份（常规供应商配置）
+        let restorable_backup = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.p1.example",
+                "ANTHROPIC_AUTH_TOKEN": "sk-p1"
+            }
+        });
+        db.save_live_backup("claude", &restorable_backup.to_string())
+            .await
+            .expect("seed live backup");
+
+        service
+            .hot_switch_provider("claude", "agg")
+            .await
+            .expect("hot switch to aggregate provider");
+
+        let backup = db
+            .get_live_backup("claude")
+            .await
+            .expect("read live backup")
+            .expect("backup should still exist");
+        let backup_value: Value =
+            serde_json::from_str(&backup.original_config).expect("parse backup");
+        assert_eq!(
+            backup_value, restorable_backup,
+            "aggregate hot switch must keep the previous restorable backup"
+        );
+    }
+
     #[test]
     fn managed_account_claude_takeover_uses_api_key_placeholder() {
         let mut provider = Provider::with_id(
@@ -3654,6 +3769,45 @@ mod tests {
             .expect("env should exist");
         assert_env_str(env, "ANTHROPIC_API_KEY", None);
         assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
+    }
+
+    #[test]
+    fn managed_account_claude_takeover_xai_keeps_one_auth_key() {
+        let mut provider = Provider::with_id(
+            "xai".to_string(),
+            "xAI".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.x.ai/v1"
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some("xai_oauth".to_string()),
+            ..Default::default()
+        });
+
+        let mut live_config = json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "old-token",
+                "ANTHROPIC_API_KEY": "old-key",
+                "OPENAI_API_KEY": "old-openai-key"
+            }
+        });
+        ProxyService::apply_claude_takeover_fields_for_provider(
+            &mut live_config,
+            "http://127.0.0.1:15721",
+            &provider,
+        );
+
+        let env = live_config
+            .get("env")
+            .and_then(Value::as_object)
+            .expect("env should exist");
+        assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", Some(PROXY_TOKEN_PLACEHOLDER));
+        assert_env_str(env, "ANTHROPIC_API_KEY", None);
+        assert_env_str(env, "OPENAI_API_KEY", None);
     }
 
     #[test]
