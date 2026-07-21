@@ -377,7 +377,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "ZetaAPI",
     websiteUrl: "https://zetaapi.ai",
-    apiKeyUrl: "https://zetaapi.ai/go/ccs",
+    apiKeyUrl: "https://zetaapi.ai/go/u117",
     settingsConfig: {
       npm: "@ai-sdk/openai-compatible",
       name: "ZetaAPI",
@@ -1573,7 +1573,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "APINebula",
     websiteUrl: "https://apinebula.com",
-    apiKeyUrl: "https://apinebula.com/02rw5X",
+    apiKeyUrl: "https://apinebula.com/VjM74M",
     settingsConfig: {
       npm: "@ai-sdk/openai-compatible",
       name: "APINebula",
@@ -1804,7 +1804,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "ClaudeCN",
     websiteUrl: "https://claudecn.top",
-    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    apiKeyUrl: "https://claudecn.ai/register?aff=HEL9",
     settingsConfig: {
       npm: "@ai-sdk/anthropic",
       name: "ClaudeCN",
@@ -1834,7 +1834,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "RunAPI",
     websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co/register?aff=iOKB",
     settingsConfig: {
       npm: "@ai-sdk/anthropic",
       name: "RunAPI",

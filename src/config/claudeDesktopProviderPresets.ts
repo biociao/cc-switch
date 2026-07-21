@@ -216,7 +216,7 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   {
     name: "ZetaAPI",
     websiteUrl: "https://zetaapi.ai",
-    apiKeyUrl: "https://zetaapi.ai/go/ccs",
+    apiKeyUrl: "https://zetaapi.ai/go/u117",
     category: "aggregator",
     baseUrl: "https://api.zetaapi.ai",
     mode: "direct",
@@ -753,7 +753,7 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   {
     name: "APINebula",
     websiteUrl: "https://apinebula.com",
-    apiKeyUrl: "https://apinebula.com/02rw5X",
+    apiKeyUrl: "https://apinebula.com/VjM74M",
     category: "third_party",
     baseUrl: "https://apinebula.com",
     mode: "direct",
@@ -848,7 +848,7 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   {
     name: "ClaudeCN",
     websiteUrl: "https://claudecn.top",
-    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    apiKeyUrl: "https://claudecn.ai/register?aff=HEL9",
     category: "third_party",
     baseUrl: "https://claudecn.top",
     mode: "direct",
@@ -861,7 +861,7 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   {
     name: "RunAPI",
     websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co/register?aff=iOKB",
     category: "aggregator",
     baseUrl: "https://runapi.co",
     mode: "direct",

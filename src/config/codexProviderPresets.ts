@@ -331,7 +331,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
   {
     name: "ZetaAPI",
     websiteUrl: "https://zetaapi.ai",
-    apiKeyUrl: "https://zetaapi.ai/go/ccs",
+    apiKeyUrl: "https://zetaapi.ai/go/u117",
     category: "aggregator",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
@@ -1206,7 +1206,7 @@ requires_openai_auth = true`,
   {
     name: "APINebula",
     websiteUrl: "https://apinebula.com",
-    apiKeyUrl: "https://apinebula.com/02rw5X",
+    apiKeyUrl: "https://apinebula.com/VjM74M",
     category: "third_party",
     auth: generateThirdPartyAuth(""),
     config: `model_provider = "custom"
@@ -1304,7 +1304,7 @@ requires_openai_auth = true`,
   {
     name: "ClaudeCN",
     websiteUrl: "https://claudecn.top",
-    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    apiKeyUrl: "https://claudecn.ai/register?aff=HEL9",
     category: "third_party",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
@@ -1319,7 +1319,7 @@ requires_openai_auth = true`,
   {
     name: "RunAPI",
     websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co/register?aff=iOKB",
     category: "aggregator",
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(

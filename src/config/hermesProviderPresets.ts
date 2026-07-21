@@ -192,7 +192,7 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   {
     name: "ZetaAPI",
     websiteUrl: "https://zetaapi.ai",
-    apiKeyUrl: "https://zetaapi.ai/go/ccs",
+    apiKeyUrl: "https://zetaapi.ai/go/u117",
     settingsConfig: {
       name: "zetaapi",
       base_url: "https://api.zetaapi.ai/v1",
@@ -1017,7 +1017,7 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   {
     name: "APINebula",
     websiteUrl: "https://apinebula.com",
-    apiKeyUrl: "https://apinebula.com/02rw5X",
+    apiKeyUrl: "https://apinebula.com/VjM74M",
     settingsConfig: {
       name: "apinebula",
       base_url: "https://apinebula.com/v1",
@@ -1137,7 +1137,7 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   {
     name: "ClaudeCN",
     websiteUrl: "https://claudecn.top",
-    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    apiKeyUrl: "https://claudecn.ai/register?aff=HEL9",
     settingsConfig: {
       name: "claudecn",
       base_url: "https://claudecn.top",
@@ -1167,7 +1167,7 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   {
     name: "RunAPI",
     websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co/register?aff=iOKB",
     settingsConfig: {
       name: "runapi",
       base_url: "https://runapi.co",

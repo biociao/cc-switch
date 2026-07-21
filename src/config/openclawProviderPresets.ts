@@ -407,7 +407,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   {
     name: "ZetaAPI",
     websiteUrl: "https://zetaapi.ai",
-    apiKeyUrl: "https://zetaapi.ai/go/ccs",
+    apiKeyUrl: "https://zetaapi.ai/go/u117",
     settingsConfig: {
       baseUrl: "https://api.zetaapi.ai/v1",
       apiKey: "",
@@ -1362,7 +1362,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   {
     name: "ClaudeCN",
     websiteUrl: "https://claudecn.top",
-    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    apiKeyUrl: "https://claudecn.ai/register?aff=HEL9",
     settingsConfig: {
       baseUrl: "https://claudecn.top",
       apiKey: "",
@@ -1410,7 +1410,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   {
     name: "RunAPI",
     websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co/register?aff=iOKB",
     settingsConfig: {
       baseUrl: "https://runapi.co",
       apiKey: "",
@@ -1890,7 +1890,7 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   {
     name: "APINebula",
     websiteUrl: "https://apinebula.com",
-    apiKeyUrl: "https://apinebula.com/02rw5X",
+    apiKeyUrl: "https://apinebula.com/VjM74M",
     settingsConfig: {
       baseUrl: "https://apinebula.com/v1",
       apiKey: "",

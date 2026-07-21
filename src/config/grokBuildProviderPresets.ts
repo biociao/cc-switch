@@ -188,7 +188,7 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
   {
     name: "ZetaAPI",
     websiteUrl: "https://zetaapi.ai",
-    apiKeyUrl: "https://zetaapi.ai/go/ccs",
+    apiKeyUrl: "https://zetaapi.ai/go/u117",
     auth: grokAuth(),
     config: grokPresetConfig("ZetaAPI", "https://api.zetaapi.ai/v1"),
     endpointCandidates: ["https://api.zetaapi.ai/v1"],
@@ -315,7 +315,7 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
   {
     name: "APINebula",
     websiteUrl: "https://apinebula.com",
-    apiKeyUrl: "https://apinebula.com/02rw5X",
+    apiKeyUrl: "https://apinebula.com/VjM74M",
     auth: grokAuth(),
     config: grokPresetConfig("APINebula", "https://apinebula.com/v1"),
     endpointCandidates: ["https://apinebula.com/v1"],
@@ -354,7 +354,7 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
   {
     name: "ClaudeCN",
     websiteUrl: "https://claudecn.top",
-    apiKeyUrl: "https://claudecn.top/register?aff=ccswitch",
+    apiKeyUrl: "https://claudecn.ai/register?aff=HEL9",
     auth: grokAuth(),
     config: grokPresetConfig("ClaudeCN", "https://claudecn.top/v1"),
     category: "third_party",
@@ -365,7 +365,7 @@ export const grokBuildProviderPresets: GrokBuildProviderPreset[] = [
   {
     name: "RunAPI",
     websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    apiKeyUrl: "https://runapi.co/register?aff=iOKB",
     auth: grokAuth(),
     config: grokPresetConfig("RunAPI", "https://runapi.co/v1"),
     category: "aggregator",
