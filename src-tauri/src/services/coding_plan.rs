@@ -410,12 +410,15 @@ fn zhipu_quota_from_body(body: &serde_json::Value) -> SubscriptionQuota {
 async fn query_minimax(api_key: &str, is_cn: bool) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
-    let api_domain = if is_cn {
-        "api.minimaxi.com"
+    // 官方文档化的查询端点（www 主站）：个人 Token Plan 与团队版订阅的
+    // Subscription Key 均可查询；旧的 api.{domain}/v1/api/openplatform 端点
+    // 对团队版 key 返回 2062 "no active token plan subscription"。
+    let www_domain = if is_cn {
+        "www.minimaxi.com"
     } else {
-        "api.minimax.io"
+        "www.minimax.io"
     };
-    let url = format!("https://{api_domain}/v1/api/openplatform/coding_plan/remains");
+    let url = format!("https://{www_domain}/v1/token_plan/remains");
 
     let resp = client
         .get(&url)
