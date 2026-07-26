@@ -18,6 +18,22 @@ English | [中文](README_ZH.md) | [日本語](README_JA.md) | [Deutsch](README_
 
 </div>
 
+> [!NOTE]
+> **This is the `ciao` branch of [biociao/cc-switch](https://github.com/biociao/cc-switch) — a Claude Science compatibility release branch, not upstream CC Switch.**
+>
+> The `ciao` version is built on top of the original [farion1231/cc-switch](https://github.com/farion1231/cc-switch) and is dedicated to keeping the **Claude Science** integration (the PR [#5440](https://github.com/farion1231/cc-switch/pull/5440) proxy launcher) working as Claude Science evolves. It tracks upstream `main` as closely as possible, and exists so that Claude Science compatibility fixes can land and iterate quickly here when the upstream author cannot review/accept PRs in time.
+>
+> Example — for **Claude Science v0.1.25** this branch already ships fixes upstream does not have:
+> - Claude Science 0.1.25 treats its own data dir as sandbox-denied "daemon territory"; launching the daemon with its cwd inside the managed data dir crashed pip-based environment provisioning (`os.getcwd()` EPERM → "1 environment failed"). The daemon is now launched with `$HOME` as cwd.
+> - The managed profile was relocated under `~/.claude-science` (0.1.25's seatbelt sandbox denies reads on `~/.cc-switch`), with automatic migration of the legacy directory.
+> - The proxy-managed auth profile no longer poses as a `claude_ai` session, so 0.1.25's new claude.ai directory-connector checks degrade quietly instead of showing a "Your claude.ai session has expired" banner.
+>
+> ---
+>
+> **这是 [biociao/cc-switch](https://github.com/biociao/cc-switch) 的 `ciao` 分支 —— 一个专注于 Claude Science 兼容的发布分支，并非 CC Switch 原版。**
+>
+> `ciao` 版本在 [cc-switch 原版](https://github.com/farion1231/cc-switch) 的基础上，专门维护 **Claude Science** 集成（代理启动器）的兼容性。它会尽量与原版 `main` 分支保持同步，其作用是在原作者来不及接受 PR 时，能够在这里快速迭代、及时跟上 Claude Science 的更新。例如针对 Claude Science v0.1.25，本分支已修复：`~/.claude-science` 之外的数据目录被 seatbelt 沙盒列为禁读区域、daemon 工作目录落入禁读区导致 pip 环境初始化失败（"1 environment failed"）、以及 claude.ai 连接器校验误报 "session expired" 横幅等问题。
+
 ## ❤️Sponsor
 
 > [Want to appear here?](mailto:farion1231@gmail.com)
