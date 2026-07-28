@@ -1124,6 +1124,8 @@
     "webSearchCompatEnabled": "有効",
     "webSearchCompatDisabled": "無効（設定書き込み時に WebSearch を無効化）",
     "webSearchCompatHint": "一部の中継チャネルは検索結果をプレーンテキストとして会話に注入します。そのようなチャネルでは「無効」を選択すると、設定書き込み時に WebSearch が無効化されます",
+    "webSearchResultFilter": "空の検索結果をフィルタ（プロキシ引き継ぎが必要）",
+    "webSearchResultFilterHint": "有効にすると、ローカルプロキシがチャネル注入の「Search results for query:」空検索結果テキストブロックを破棄します（リクエスト履歴とレスポンスの両方でフィルタ）。実質的な内容を持つ検索結果はそのまま保持されます",
     "customUserAgent": "カスタム User-Agent",
     "customUserAgentHint": "ローカルルーティング/プロキシ引き継ぎが有効な場合にのみ適用され、プロバイダー API へ転送するリクエストの User-Agent を置き換えます。",
     "customUserAgentInvalid": "User-Agent に制御文字（改行など）を含めることはできません。含まれている場合は無視されます。",

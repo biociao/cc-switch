@@ -37,6 +37,59 @@ pub(crate) const CLAUDE_WEB_SEARCH_REJECT_HOSTS: &[&str] = &[];
 /// `/` 分段（与 host 黑名单同理，目前为空，发现一例补一例）。
 pub(crate) const CLAUDE_WEB_SEARCH_REJECT_MODEL_PREFIXES: &[&str] = &[];
 
+/// 中转渠道注入的搜索结果文本块前缀。渠道把联网搜索"假支持"成一个
+/// text block，内容形如 `"Search results for query: <可能为空>"`。
+pub(crate) const SEARCH_RESULTS_HEADER_PREFIX: &str = "Search results for query:";
+
+/// content 数组被清空时补的占位 text block：Anthropic 要求 message 的
+/// content 数组非空（与 `(omitted server tool exchange)` 同一思路）。
+pub(crate) const EMPTY_SEARCH_RESULTS_PLACEHOLDER: &str = "(omitted empty search results)";
+
+/// 判定一段 text block 文本是否为「空搜索结果头」：去掉首尾空白后以
+/// `Search results for query:` 开头、且冒号后没有实质内容（纯空白）。
+/// 冒号后有内容（真实搜索结果）或不匹配前缀的一律返回 false。
+pub(crate) fn is_empty_search_results_header(text: &str) -> bool {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix(SEARCH_RESULTS_HEADER_PREFIX) else {
+        return false;
+    };
+    rest.trim().is_empty()
+}
+
+/// `meta.webSearchResultFilter` 开关：默认关，显式 true 才启用。
+/// 开启后代理侧会过滤渠道注入的空搜索结果 text block（请求历史 + 响应）。
+pub(crate) fn web_search_result_filter_enabled(provider: &Provider) -> bool {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.web_search_result_filter)
+        .unwrap_or(false)
+}
+
+/// 从一个 Anthropic content 数组中剔除空搜索结果头 text block；
+/// 若剔除后数组为空，补一个占位 block 保证非空。返回是否有改动。
+/// 请求侧历史清理与响应侧非流式过滤共用。
+pub(crate) fn strip_empty_search_result_text_blocks(content: &mut Vec<Value>) -> bool {
+    let original_len = content.len();
+    content.retain(|block| {
+        block.get("type").and_then(Value::as_str) != Some("text")
+            || !block
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(is_empty_search_results_header)
+    });
+    if content.len() == original_len {
+        return false;
+    }
+    if content.is_empty() {
+        content.push(json!({
+            "type": "text",
+            "text": EMPTY_SEARCH_RESULTS_PLACEHOLDER
+        }));
+    }
+    true
+}
+
 /// 判定一个 Claude 供应商写入 live 时是否应注入 `permissions.deny: ["WebSearch"]`。
 ///
 /// 优先级：
@@ -333,5 +386,84 @@ mod tests {
         });
         strip_injected_web_search_deny(&mut live, &provider);
         assert_eq!(live["permissions"]["deny"], json!(["WebSearch"]));
+    }
+
+    #[test]
+    fn empty_search_results_header_matches_only_blank_results() {
+        // 空搜索头：冒号后纯空白 → true
+        assert!(is_empty_search_results_header("Search results for query:"));
+        assert!(is_empty_search_results_header("Search results for query:   "));
+        assert!(is_empty_search_results_header(
+            "  Search results for query:\n\t "
+        ));
+        // 冒号后有实质内容 → false（原样保留，不改写）
+        assert!(!is_empty_search_results_header(
+            "Search results for query: rust async runtime"
+        ));
+        assert!(!is_empty_search_results_header(
+            "Search results for query:\n1. result one\n2. result two"
+        ));
+        // 不含前缀 → false
+        assert!(!is_empty_search_results_header("hello world"));
+        assert!(!is_empty_search_results_header(""));
+        assert!(!is_empty_search_results_header("Search results for query"));
+    }
+
+    #[test]
+    fn result_filter_enabled_only_when_meta_true() {
+        // 默认（无 meta / 字段缺省）→ 关；显式 true → 开；显式 false → 关
+        let provider = claude_provider(basic_settings(), None);
+        assert!(!web_search_result_filter_enabled(&provider));
+
+        let mut provider = claude_provider(basic_settings(), None);
+        provider.meta = Some(ProviderMeta {
+            web_search_result_filter: Some(true),
+            ..ProviderMeta::default()
+        });
+        assert!(web_search_result_filter_enabled(&provider));
+
+        provider.meta = Some(ProviderMeta {
+            web_search_result_filter: Some(false),
+            ..ProviderMeta::default()
+        });
+        assert!(!web_search_result_filter_enabled(&provider));
+    }
+
+    #[test]
+    fn strip_blocks_drops_empty_header_and_keeps_the_rest() {
+        let mut content = vec![
+            json!({ "type": "text", "text": "Search results for query:  " }),
+            json!({ "type": "text", "text": "Search results for query: real results" }),
+            json!({ "type": "thinking", "thinking": "..." }),
+            json!({ "type": "text", "text": "normal answer" }),
+        ];
+        assert!(strip_empty_search_result_text_blocks(&mut content));
+        assert_eq!(content.len(), 3);
+        assert_eq!(
+            content[0]["text"],
+            json!("Search results for query: real results")
+        );
+        assert_eq!(content[1]["type"], json!("thinking"));
+        assert_eq!(content[2]["text"], json!("normal answer"));
+    }
+
+    #[test]
+    fn strip_blocks_inserts_placeholder_when_all_dropped() {
+        let mut content = vec![json!({ "type": "text", "text": "Search results for query:" })];
+        assert!(strip_empty_search_result_text_blocks(&mut content));
+        assert_eq!(
+            content,
+            vec![json!({ "type": "text", "text": EMPTY_SEARCH_RESULTS_PLACEHOLDER })]
+        );
+    }
+
+    #[test]
+    fn strip_blocks_noop_without_match() {
+        let mut content = vec![
+            json!({ "type": "text", "text": "Search results for query: something" }),
+            json!({ "type": "text", "text": 42 }), // 非字符串 text 字段：不动
+        ];
+        assert!(!strip_empty_search_result_text_blocks(&mut content));
+        assert_eq!(content.len(), 2);
     }
 }

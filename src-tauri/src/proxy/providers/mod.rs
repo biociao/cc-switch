@@ -38,6 +38,7 @@ pub mod transform_codex_responses_namespace;
 pub mod transform_codex_responses_xai_sanitize;
 pub mod transform_gemini;
 pub mod transform_responses;
+pub mod transform_search_results_filter;
 pub mod xai_oauth_auth;
 
 use crate::app_config::AppType;
