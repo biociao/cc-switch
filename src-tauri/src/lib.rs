@@ -4,6 +4,7 @@ mod auto_launch;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
+mod claude_web_search;
 mod codex_config;
 mod codex_history_migration;
 mod codex_state_db;
@@ -1952,6 +1953,25 @@ fn initialize_common_config_snippets(state: &store::AppState) {
             Ok(s) => s,
             Err(_) => continue,
         };
+
+        // Claude：live 里可能带着 cc-switch 写 live 时注入的 WebSearch deny 哨兵
+        // （见 claude_web_search.rs），提取共享片段前按当前 provider 剥掉，否则
+        // 注入产物会被自动提取进通用配置片段并合并进所有勾选通用配置的供应商。
+        let mut settings = settings;
+        if matches!(app_type, crate::app_config::AppType::Claude) {
+            if let Ok(Some(current_id)) =
+                crate::settings::get_effective_current_provider(&state.db, &app_type)
+            {
+                if let Ok(Some(provider)) =
+                    state.db.get_provider_by_id(&current_id, app_type.as_str())
+                {
+                    crate::claude_web_search::strip_injected_web_search_deny(
+                        &mut settings,
+                        &provider,
+                    );
+                }
+            }
+        }
 
         match crate::services::provider::ProviderService::extract_common_config_snippet_from_settings(
             app_type.clone(),
