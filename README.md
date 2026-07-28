@@ -1,6 +1,6 @@
 <div align="center">
 
-# CC Switch
+# CC Switch: _Claude Science_ supported branch
 
 ### The All-in-One Manager for Claude Code, Claude Desktop, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw & Hermes Agent
 
