@@ -1104,6 +1104,8 @@
     "webSearchCompatEnabled": "开启",
     "webSearchCompatDisabled": "关闭（写入配置时禁用 WebSearch）",
     "webSearchCompatHint": "部分中转渠道会把搜索结果以纯文本注入对话；对此类渠道选择“关闭”即可在写入配置时禁用 WebSearch",
+    "webSearchResultFilter": "过滤空搜索结果（需代理接管）",
+    "webSearchResultFilterHint": "开启后，本地代理会丢弃渠道注入的“Search results for query:”空搜索结果文本块（请求历史与响应同时过滤）；有实质内容的搜索结果原样保留",
     "customUserAgent": "自定义 User-Agent",
     "customUserAgentHint": "仅在开启本地路由/代理接管后生效，会替换转发到供应商 API 请求中的 User-Agent。",
     "customUserAgentInvalid": "User-Agent 不能包含控制字符（如换行符），否则将被忽略。",

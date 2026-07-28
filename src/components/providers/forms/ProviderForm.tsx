@@ -358,6 +358,9 @@ function ProviderFormFull({
     }
     setEndpointAutoSelect(initialData?.meta?.endpointAutoSelect ?? true);
     setWebSearchCompat(initialData?.meta?.webSearchCompat ?? "auto");
+    setWebSearchResultFilter(
+      initialData?.meta?.webSearchResultFilter ?? false,
+    );
     setLocalIsFullUrl(
       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
     );
@@ -440,6 +443,12 @@ function ProviderFormFull({
   const [webSearchCompat, setWebSearchCompat] = useState<
     NonNullable<ProviderMeta["webSearchCompat"]>
   >(() => initialData?.meta?.webSearchCompat ?? "auto");
+
+  // 过滤渠道注入的空搜索结果 text block（仅 Claude，需代理接管）：
+  // 默认关，显式开启后请求侧清理历史、响应侧实时过滤
+  const [webSearchResultFilter, setWebSearchResultFilter] = useState<boolean>(
+    () => initialData?.meta?.webSearchResultFilter ?? false,
+  );
 
   // 软校验：收集"业务约束"类问题（空值/缺项），由用户决定是否仍要保存
   const [softIssues, setSoftIssues] = useState<string[] | null>(null);
@@ -1570,6 +1579,9 @@ function ProviderFormFull({
       endpointAutoSelect,
       // Claude web_search 兼容策略（仅 Claude）
       webSearchCompat: appId === "claude" ? webSearchCompat : undefined,
+      // 过滤空搜索结果 text block（仅 Claude，默认关 = 不写入）
+      webSearchResultFilter:
+        appId === "claude" && webSearchResultFilter ? true : undefined,
       claudeDesktopMode: undefined,
       // 保存 providerType（用于识别 Copilot / Codex OAuth 等特殊供应商）
       providerType,
@@ -2652,6 +2664,28 @@ function ProviderFormFull({
                     {t("providerForm.webSearchCompatHint", {
                       defaultValue:
                         "部分中转渠道会把搜索结果以纯文本注入对话；对此类渠道选择“关闭”即可在写入配置时禁用 WebSearch",
+                    })}
+                  </p>
+                  <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      id="webSearchResultFilter"
+                      checked={webSearchResultFilter}
+                      onChange={(e) =>
+                        setWebSearchResultFilter(e.target.checked)
+                      }
+                      className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+                    />
+                    <span>
+                      {t("providerForm.webSearchResultFilter", {
+                        defaultValue: "过滤空搜索结果（需代理接管）",
+                      })}
+                    </span>
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerForm.webSearchResultFilterHint", {
+                      defaultValue:
+                        "开启后，本地代理会丢弃渠道注入的“Search results for query:”空搜索结果文本块（请求历史与响应同时过滤）；有实质内容的搜索结果原样保留",
                     })}
                   </p>
                 </div>
