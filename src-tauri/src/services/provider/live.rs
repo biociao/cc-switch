@@ -831,6 +831,10 @@ fn restore_live_settings_for_provider_backfill(
         let mut settings = live_settings;
         strip_injected_codex_oauth_context_defaults(&mut settings, provider);
         strip_injected_kimi_for_coding_context_defaults(&mut settings, provider);
+        // 与 apply_claude_web_search_policy 严格对称：写 live 时注入的
+        // WebSearch deny 只属于 live，切走回填时必须剥掉，否则注入规则会
+        // 固化进供应商存储配置；用户手写的 WebSearch deny 永不被误删。
+        crate::claude_web_search::strip_injected_web_search_deny(&mut settings, provider);
         return settings;
     }
     if matches!(app_type, AppType::GrokBuild) {
@@ -1017,7 +1021,13 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
     match app_type {
         AppType::Claude => {
             let path = get_claude_settings_path();
-            let settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            let mut settings = sanitize_claude_settings_for_live(&provider.settings_config);
+            // web_search 兼容层注入（详见 claude_web_search.rs）。上游
+            // write_live_with_common_config 已把通用配置片段合并进
+            // provider.settings_config，注入天然发生在合并之后，因此这条规则
+            // 不会被 extract_claude_common_config 提取进共享片段；回填时由
+            // strip_injected_web_search_deny 对称剥离。
+            crate::claude_web_search::apply_claude_web_search_policy(&mut settings, provider);
             write_json_file(&path, &settings)?;
         }
         AppType::ClaudeDesktop => {
