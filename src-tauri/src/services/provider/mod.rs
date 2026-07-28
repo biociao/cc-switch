@@ -926,6 +926,101 @@ mod tests {
         });
     }
 
+    fn claude_relay_provider_with_web_search_compat(id: &str, compat: &str) -> Provider {
+        let mut provider = Provider::with_id(
+            id.into(),
+            id.into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "sk-relay",
+                    "ANTHROPIC_BASE_URL": "https://relay.example"
+                },
+                "permissions": { "allow": ["Bash"] }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            web_search_compat: Some(compat.to_string()),
+            ..ProviderMeta::default()
+        });
+        provider
+    }
+
+    #[test]
+    fn claude_switch_injects_web_search_deny_for_disabled_provider() {
+        with_test_home(|state, _| {
+            // webSearchCompat = "disabled" 的中转渠道：写入 live 时注入
+            // permissions.deny: ["WebSearch"]（详见 claude_web_search.rs）
+            let relay = claude_relay_provider_with_web_search_compat("relay", "disabled");
+            state.db.save_provider("claude", &relay).unwrap();
+
+            ProviderService::switch(state, AppType::Claude, "relay").expect("switch");
+
+            let live: Value = read_json_file(&get_claude_settings_path()).expect("read live");
+            assert_eq!(
+                live["permissions"]["deny"],
+                json!(["WebSearch"]),
+                "disabled provider should inject WebSearch deny into live, got: {live}"
+            );
+            assert_eq!(
+                live["permissions"]["allow"],
+                json!(["Bash"]),
+                "user permissions must survive injection, got: {live}"
+            );
+
+            // 注入只属于 live：供应商存储配置不含这条规则
+            let stored = state
+                .db
+                .get_provider_by_id("relay", "claude")
+                .expect("get provider")
+                .expect("provider exists");
+            assert!(
+                stored.settings_config["permissions"].get("deny").is_none(),
+                "injected rule must not leak into stored config, got: {:?}",
+                stored.settings_config
+            );
+        });
+    }
+
+    #[test]
+    fn claude_switch_away_strips_injected_web_search_deny_from_backfill() {
+        with_test_home(|state, _| {
+            let relay = claude_relay_provider_with_web_search_compat("relay", "disabled");
+            state.db.save_provider("claude", &relay).unwrap();
+            let normal = claude_relay_provider_with_web_search_compat("official", "enabled");
+            state.db.save_provider("claude", &normal).unwrap();
+
+            ProviderService::switch(state, AppType::Claude, "relay").expect("switch to relay");
+            ProviderService::switch(state, AppType::Claude, "official")
+                .expect("switch to official");
+
+            // 切走回填：注入的 WebSearch deny 不得固化进 relay 的存储配置
+            let stored = state
+                .db
+                .get_provider_by_id("relay", "claude")
+                .expect("get provider")
+                .expect("provider exists");
+            assert!(
+                stored.settings_config["permissions"].get("deny").is_none(),
+                "backfill must strip the injected WebSearch deny, got: {:?}",
+                stored.settings_config
+            );
+            assert_eq!(
+                stored.settings_config["permissions"]["allow"],
+                json!(["Bash"]),
+                "user permissions must survive backfill, got: {:?}",
+                stored.settings_config
+            );
+
+            // enabled 供应商的 live 不含注入规则
+            let live: Value = read_json_file(&get_claude_settings_path()).expect("read live");
+            assert!(
+                live["permissions"].get("deny").is_none(),
+                "enabled provider live must not contain the deny rule, got: {live}"
+            );
+        });
+    }
+
     #[test]
     fn add_aggregate_without_current_provider_keeps_it_inactive() {
         with_test_home(|state, _| {
@@ -3439,9 +3534,18 @@ impl ProviderService {
             }
         }
 
+        // cc-switch 写 live 时注入的 permissions.deny "WebSearch" 哨兵不得进
+        // 共享片段（否则会被合并进所有勾选通用配置的供应商）。剥离需要 provider
+        // 做判定并区分用户手写的 deny，extract_claude_common_config 的签名拿不到
+        // provider，因此在调用点先做剥离。
+        let mut live_config = live_config.clone();
+        if matches!(app_type, AppType::Claude) {
+            crate::claude_web_search::strip_injected_web_search_deny(&mut live_config, provider);
+        }
+
         let new_snippet = match Self::extract_common_config_snippet_from_settings(
             app_type.clone(),
-            live_config,
+            &live_config,
         ) {
             Ok(snippet) => snippet,
             Err(err) => {

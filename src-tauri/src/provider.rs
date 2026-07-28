@@ -519,6 +519,10 @@ pub struct ProviderMeta {
     /// Claude 认证字段名（"ANTHROPIC_AUTH_TOKEN" 或 "ANTHROPIC_API_KEY"）
     #[serde(rename = "apiKeyField", skip_serializing_if = "Option::is_none")]
     pub api_key_field: Option<String>,
+    /// Claude web_search 兼容策略："auto"（默认，按内置黑名单判定）/
+    /// "enabled"（强制允许）/ "disabled"（写入 live 时 deny WebSearch）
+    #[serde(rename = "webSearchCompat", skip_serializing_if = "Option::is_none")]
+    pub web_search_compat: Option<String>,
     /// 是否将 base_url 视为完整 API 端点（不拼接 endpoint 路径）
     #[serde(rename = "isFullUrl", skip_serializing_if = "Option::is_none")]
     pub is_full_url: Option<bool>,

@@ -75,6 +75,13 @@ import { CommonConfigEditor } from "./CommonConfigEditor";
 import GeminiConfigEditor from "./GeminiConfigEditor";
 import JsonEditor from "@/components/JsonEditor";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ProviderPresetSelector } from "./ProviderPresetSelector";
 import { BasicFormFields } from "./BasicFormFields";
 import { ClaudeFormFields } from "./ClaudeFormFields";
@@ -373,6 +380,7 @@ function ProviderFormFull({
       setDraftCustomEndpoints([]);
     }
     setEndpointAutoSelect(initialData?.meta?.endpointAutoSelect ?? true);
+    setWebSearchCompat(initialData?.meta?.webSearchCompat ?? "auto");
     setLocalIsFullUrl(
       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
     );
@@ -449,6 +457,12 @@ function ProviderFormFull({
       return "ANTHROPIC_AUTH_TOKEN";
     },
   );
+
+  // Claude web_search 兼容策略（仅 Claude）：auto 按内置黑名单判定，
+  // disabled 在写入 live 配置时注入 permissions.deny: ["WebSearch"]
+  const [webSearchCompat, setWebSearchCompat] = useState<
+    NonNullable<ProviderMeta["webSearchCompat"]>
+  >(() => initialData?.meta?.webSearchCompat ?? "auto");
 
   // 软校验：收集"业务约束"类问题（空值/缺项），由用户决定是否仍要保存
   const [softIssues, setSoftIssues] = useState<string[] | null>(null);
@@ -1609,6 +1623,9 @@ function ProviderFormFull({
               ? useGeminiCommonConfigFlag
               : undefined,
       endpointAutoSelect: aggregateEnabled ? undefined : endpointAutoSelect,
+      // Claude web_search 兼容策略（仅 Claude 非聚合供应商）
+      webSearchCompat:
+        appId === "claude" && !aggregateEnabled ? webSearchCompat : undefined,
       claudeDesktopMode: undefined,
       // 保存 providerType（用于识别 Copilot / Codex OAuth 等特殊供应商）
       providerType,
@@ -2668,6 +2685,54 @@ function ProviderFormFull({
                 isExtracting={isClaudeExtracting}
               />
               {settingsConfigErrorField}
+
+              {/* Claude web_search 兼容策略：对不支持/假支持联网搜索的
+                  第三方中转渠道，写入 live 配置时注入
+                  permissions.deny: ["WebSearch"] 关闭 WebSearch */}
+              {appId === "claude" && (
+                <div className="space-y-2">
+                  <Label htmlFor="webSearchCompat">
+                    {t("providerForm.webSearchCompat", {
+                      defaultValue: "联网搜索（WebSearch）",
+                    })}
+                  </Label>
+                  <Select
+                    value={webSearchCompat}
+                    onValueChange={(value) =>
+                      setWebSearchCompat(
+                        value as NonNullable<ProviderMeta["webSearchCompat"]>,
+                      )
+                    }
+                  >
+                    <SelectTrigger id="webSearchCompat" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">
+                        {t("providerForm.webSearchCompatAuto", {
+                          defaultValue: "自动（按内置规则判定）",
+                        })}
+                      </SelectItem>
+                      <SelectItem value="disabled">
+                        {t("providerForm.webSearchCompatDisabled", {
+                          defaultValue: "关闭（写入配置时禁用 WebSearch）",
+                        })}
+                      </SelectItem>
+                      <SelectItem value="enabled">
+                        {t("providerForm.webSearchCompatEnabled", {
+                          defaultValue: "开启",
+                        })}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {t("providerForm.webSearchCompatHint", {
+                      defaultValue:
+                        "部分中转渠道会把搜索结果以纯文本注入对话；对此类渠道选择“关闭”即可在写入配置时禁用 WebSearch",
+                    })}
+                  </p>
+                </div>
+              )}
             </>
           )}
 
