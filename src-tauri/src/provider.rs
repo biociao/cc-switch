@@ -523,6 +523,11 @@ pub struct ProviderMeta {
     /// "enabled"（强制允许）/ "disabled"（写入 live 时 deny WebSearch）
     #[serde(rename = "webSearchCompat", skip_serializing_if = "Option::is_none")]
     pub web_search_compat: Option<String>,
+    /// 过滤渠道注入的空搜索结果 text block（"Search results for query:" 后无内容）。
+    /// 仅在本地代理接管时生效：请求侧清理历史消息、响应侧实时过滤。
+    /// 默认关，显式 true 才启用。
+    #[serde(rename = "webSearchResultFilter", skip_serializing_if = "Option::is_none")]
+    pub web_search_result_filter: Option<bool>,
     /// 是否将 base_url 视为完整 API 端点（不拼接 endpoint 路径）
     #[serde(rename = "isFullUrl", skip_serializing_if = "Option::is_none")]
     pub is_full_url: Option<bool>,

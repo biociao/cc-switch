@@ -30,6 +30,7 @@ use super::{
         streaming_responses::create_anthropic_sse_stream_from_responses,
         transform, transform_codex_anthropic, transform_codex_chat,
         transform_codex_responses_namespace, transform_gemini, transform_responses,
+        transform_search_results_filter,
     },
     response_processor::{
         create_logged_passthrough_stream, create_usage_collector, process_response,
@@ -240,6 +241,15 @@ async fn handle_messages_for_app(
             connection_guard,
         )
         .await;
+    }
+
+    // Claude 特有：过滤渠道注入的空搜索结果 text block（仅透传 + anthropic
+    // 格式 + meta.webSearchResultFilter 显式开启时生效）
+    if api_format.trim() == "anthropic"
+        && crate::claude_web_search::web_search_result_filter_enabled(&ctx.provider)
+    {
+        return handle_claude_search_results_filter(response, &ctx, &state, connection_guard)
+            .await;
     }
 
     // 通用响应处理（透传模式）
@@ -1170,6 +1180,150 @@ async fn handle_codex_responses_namespace_restore(
         .body(axum::body::Body::from(restored_bytes))
         .map_err(|e| {
             log::error!("[{}] 构建 namespace 还原响应失败: {e}", ctx.tag);
+            ProxyError::Internal(format!("Failed to build response: {e}"))
+        })
+}
+
+/// Response handler for the Claude passthrough with `meta.webSearchResultFilter`
+/// enabled: drops empty `"Search results for query:"` text blocks injected by
+/// relay channels (empty result headers) from both streaming and non-streaming
+/// Anthropic Messages responses. Success bodies only; error responses and
+/// usage accounting stay identical to the generic passthrough path.
+async fn handle_claude_search_results_filter(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    connection_guard: Option<ActiveConnectionGuard>,
+) -> Result<axum::response::Response, ProxyError> {
+    let status = response.status();
+
+    // 错误体不含 assistant content，交给通用透传，保证错误形状与 usage
+    // 处理与未过滤路径完全一致
+    if !status.is_success() {
+        return process_response(response, ctx, state, &CLAUDE_PARSER_CONFIG, connection_guard)
+            .await;
+    }
+
+    if response.is_sse() {
+        let mut response_headers = response.headers().clone();
+        strip_hop_by_hop_response_headers(&mut response_headers);
+
+        let mut builder = axum::response::Response::builder().status(status);
+        for (key, value) in &response_headers {
+            builder = builder.header(key, value);
+        }
+
+        let filter_stream =
+            transform_search_results_filter::create_search_results_filter_sse_stream(
+                response.bytes_stream(),
+            );
+        let usage_collector =
+            create_usage_collector(ctx, state, status.as_u16(), &CLAUDE_PARSER_CONFIG);
+        let logged_stream = create_logged_passthrough_stream(
+            filter_stream,
+            ctx.tag,
+            usage_collector,
+            ctx.streaming_timeout_config(),
+            connection_guard,
+        );
+
+        let body = axum::body::Body::from_stream(logged_stream);
+        return builder.body(body).map_err(|e| {
+            log::error!("[{}] 构建搜索结果过滤流式响应失败: {e}", ctx.tag);
+            ProxyError::Internal(format!("Failed to build streaming response: {e}"))
+        });
+    }
+
+    // 非流式：整包解析后剔除空搜索头 block，再按原样记账 usage
+    let _connection_guard = connection_guard;
+    let body_timeout =
+        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
+            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+    let (mut response_headers, status, body_bytes) =
+        read_decoded_body(response, ctx.tag, body_timeout).await?;
+    strip_hop_by_hop_response_headers(&mut response_headers);
+
+    // body 不是合法 JSON（异常上游）时原样透传；过滤无改动时也回传原始字节，
+    // 保证未命中场景的响应与透传路径字节级一致
+    let filtered_bytes = match serde_json::from_slice::<Value>(&body_bytes) {
+        Ok(mut value) => {
+            let changed =
+                transform_search_results_filter::filter_empty_search_result_blocks_in_response(
+                    &mut value,
+                );
+            if let Some(usage) =
+                TokenUsage::from_claude_response(&value).filter(TokenUsage::has_billable_tokens)
+            {
+                let model = value
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| ctx.outbound_model.clone())
+                    .unwrap_or_else(|| ctx.request_model.clone());
+                let request_model = ctx.request_model.clone();
+                let outbound_model = ctx
+                    .outbound_model
+                    .clone()
+                    .unwrap_or_else(|| ctx.request_model.clone());
+                let app_type_str = ctx.app_type_str;
+                tokio::spawn({
+                    let state = state.clone();
+                    let provider_id = ctx.provider.id.clone();
+                    let session_id = ctx.session_id.clone();
+                    let latency_ms = ctx.latency_ms();
+                    async move {
+                        log_usage(
+                            &state,
+                            &provider_id,
+                            app_type_str,
+                            &model,
+                            &request_model,
+                            &outbound_model,
+                            usage,
+                            latency_ms,
+                            None,
+                            false,
+                            status.as_u16(),
+                            Some(session_id),
+                        )
+                        .await;
+                    }
+                });
+            }
+            if changed {
+                match serde_json::to_vec(&value) {
+                    Ok(bytes) => Bytes::from(bytes),
+                    Err(e) => {
+                        log::error!("[{}] 序列化搜索结果过滤响应失败: {e}", ctx.tag);
+                        body_bytes
+                    }
+                }
+            } else {
+                body_bytes
+            }
+        }
+        Err(_) => body_bytes,
+    };
+
+    strip_entity_headers_for_rebuilt_body(&mut response_headers);
+    response_headers.remove(axum::http::header::CONTENT_TYPE);
+
+    let mut builder = axum::response::Response::builder().status(status);
+    for (key, value) in response_headers.iter() {
+        builder = builder.header(key, value);
+    }
+    builder = builder.header(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    builder
+        .body(axum::body::Body::from(filtered_bytes))
+        .map_err(|e| {
+            log::error!("[{}] 构建搜索结果过滤响应失败: {e}", ctx.tag);
             ProxyError::Internal(format!("Failed to build response: {e}"))
         })
 }

@@ -230,6 +230,10 @@ export interface ProviderMeta {
   // - "disabled"：写入 live 配置时注入 permissions.deny: ["WebSearch"]
   //   （用于不支持/假支持联网搜索的第三方中转渠道）
   webSearchCompat?: "auto" | "enabled" | "disabled";
+  // 过滤渠道注入的空搜索结果 text block（"Search results for query:" 后无内容）。
+  // 仅在本地代理接管时生效：请求侧清理历史消息、响应侧实时过滤。
+  // 默认关闭，显式 true 才启用。
+  webSearchResultFilter?: boolean;
   // 是否将 base_url 视为完整 API 端点（代理直接使用此 URL，不拼接路径）
   isFullUrl?: boolean;
   // Prompt cache key for OpenAI Responses-compatible endpoints (improves cache hit rate)

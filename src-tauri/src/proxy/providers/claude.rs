@@ -325,6 +325,7 @@ pub fn normalize_anthropic_messages_for_provider(
     changed |= normalize_server_tool_blocks_for_non_official(body, provider, api_format);
     changed |= normalize_orphan_tool_pairing_for_non_official(body, provider, api_format);
     changed |= normalize_deepseek_thinking_disabled_strip_effort(body, provider);
+    changed |= normalize_empty_search_result_headers_for_provider(body, provider, api_format);
     changed
 }
 
@@ -387,6 +388,40 @@ pub fn normalize_server_tool_blocks_for_non_official(
             changed = true;
         }
         *content = rewritten;
+    }
+
+    changed
+}
+
+/// 中转渠道会把空搜索结果头（"Search results for query:" 后无内容的 text
+/// block）注入 assistant 响应；这些 block 随历史消息回传后会让模型反复复读。
+/// 响应侧由 `transform_search_results_filter` 实时过滤，这里在请求侧清理
+/// 历史消息里已经存在的同类 block（之前响应留下来的）。
+///
+/// 仅对显式开启 `meta.webSearchResultFilter` 的非官方端点生效；content 数组
+/// 被清空时补占位 block，保证 Anthropic 要求的非空 content。
+pub fn normalize_empty_search_result_headers_for_provider(
+    body: &mut Value,
+    provider: &Provider,
+    api_format: &str,
+) -> bool {
+    if api_format.trim() != "anthropic"
+        || is_anthropic_official_endpoint(provider)
+        || !crate::claude_web_search::web_search_result_filter_enabled(provider)
+    {
+        return false;
+    }
+
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let mut changed = false;
+    for message in messages {
+        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        changed |= crate::claude_web_search::strip_empty_search_result_text_blocks(content);
     }
 
     changed
@@ -3423,6 +3458,143 @@ mod tests {
         let remaining = serde_json::to_string(&body).unwrap();
         assert!(!remaining.contains("server_tool_use"));
         assert!(!remaining.contains("web_search_tool_result"));
+    }
+
+    // ==================== normalize_empty_search_result_headers_for_provider 测试 ====================
+
+    fn search_result_filter_provider() -> Provider {
+        create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://relay.example.com/v1",
+                    "ANTHROPIC_API_KEY": "test-key"
+                }
+            }),
+            ProviderMeta {
+                web_search_result_filter: Some(true),
+                ..ProviderMeta::default()
+            },
+        )
+    }
+
+    fn search_result_history_body() -> serde_json::Value {
+        json!({
+            "model": "claude-sonnet-4",
+            "messages": [
+                { "role": "user", "content": "search something" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "Search results for query: " },
+                        { "type": "text", "text": "Search results for query: real hits here" },
+                        { "type": "text", "text": "Here is the answer." }
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "Search results for query:" }]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn test_search_result_headers_dropped_when_filter_enabled() {
+        let mut body = search_result_history_body();
+
+        let changed = normalize_empty_search_result_headers_for_provider(
+            &mut body,
+            &search_result_filter_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        // 空搜索头被剔除；有内容的搜索头与普通 text 原样保留
+        let content = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(
+            content[0]["text"],
+            "Search results for query: real hits here"
+        );
+        assert_eq!(content[1]["text"], "Here is the answer.");
+        // content 被清空时补占位 block，保证非空
+        let emptied = body["messages"][2]["content"].as_array().unwrap();
+        assert_eq!(emptied.len(), 1);
+        assert_eq!(emptied[0]["type"], "text");
+        assert!(emptied[0]["text"].as_str().unwrap().contains("omitted"));
+    }
+
+    #[test]
+    fn test_search_result_headers_kept_when_filter_disabled() {
+        for meta in [None, Some(false)] {
+            let mut provider = search_result_filter_provider();
+            provider.meta = meta.map(|enabled| ProviderMeta {
+                web_search_result_filter: Some(enabled),
+                ..ProviderMeta::default()
+            });
+
+            let mut body = search_result_history_body();
+            let original = body.clone();
+
+            let changed = normalize_empty_search_result_headers_for_provider(
+                &mut body,
+                &provider,
+                "anthropic",
+            );
+
+            assert!(!changed);
+            assert_eq!(body, original);
+        }
+    }
+
+    #[test]
+    fn test_search_result_headers_kept_for_official_endpoint() {
+        let mut provider = search_result_filter_provider();
+        provider.settings_config["env"]["ANTHROPIC_BASE_URL"] =
+            json!("https://api.anthropic.com");
+
+        let mut body = search_result_history_body();
+        let original = body.clone();
+
+        let changed = normalize_empty_search_result_headers_for_provider(
+            &mut body,
+            &provider,
+            "anthropic",
+        );
+
+        assert!(!changed);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn test_search_result_headers_skipped_for_non_anthropic_format() {
+        let mut body = search_result_history_body();
+        let original = body.clone();
+
+        let changed = normalize_empty_search_result_headers_for_provider(
+            &mut body,
+            &search_result_filter_provider(),
+            "openai_chat",
+        );
+
+        assert!(!changed);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn test_normalize_messages_pipeline_drops_search_result_headers() {
+        let mut body = search_result_history_body();
+
+        let changed = normalize_anthropic_messages_for_provider(
+            &mut body,
+            &search_result_filter_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let remaining = serde_json::to_string(&body).unwrap();
+        assert!(!remaining.contains("Search results for query: \""));
+        assert!(remaining.contains("real hits here"));
     }
 
     fn minimax_provider() -> Provider {
