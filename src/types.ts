@@ -204,6 +204,12 @@ export interface ProviderMeta {
   authBinding?: AuthBinding;
   // Claude 认证字段名
   apiKeyField?: ClaudeApiKeyField;
+  // Claude web_search 兼容策略：
+  // - "auto"（默认）：按内置黑名单判定
+  // - "enabled"：强制允许 WebSearch
+  // - "disabled"：写入 live 配置时注入 permissions.deny: ["WebSearch"]
+  //   （用于不支持/假支持联网搜索的第三方中转渠道）
+  webSearchCompat?: "auto" | "enabled" | "disabled";
   // 是否将 base_url 视为完整 API 端点（代理直接使用此 URL，不拼接路径）
   isFullUrl?: boolean;
   // Prompt cache key for OpenAI Responses-compatible endpoints (improves cache hit rate)
