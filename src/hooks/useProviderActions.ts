@@ -162,7 +162,7 @@ export function useProviderActions(
   const switchProvider = useCallback(
     async (provider: Provider) => {
       if (
-        activeApp === "claude" &&
+        (activeApp === "claude" || activeApp === "claude-science") &&
         isAggregateProvider(provider) &&
         !isProxyTakeover
       ) {
@@ -176,7 +176,7 @@ export function useProviderActions(
       }
 
       const isCopilotProvider =
-        activeApp === "claude" &&
+        (activeApp === "claude" || activeApp === "claude-science") &&
         provider.meta?.providerType === "github_copilot";
       const isCodexChatFormat =
         (activeApp === "codex" || activeApp === "grokbuild") &&
@@ -224,14 +224,14 @@ export function useProviderActions(
           });
         } else if (
           provider.meta?.apiFormat === "openai_chat" &&
-          activeApp === "claude"
+          (activeApp === "claude" || activeApp === "claude-science")
         ) {
           proxyRequiredReason = t("notifications.proxyReasonOpenAIChat", {
             defaultValue: "使用 OpenAI Chat 接口格式",
           });
         } else if (
           provider.meta?.apiFormat === "openai_responses" &&
-          activeApp === "claude"
+          (activeApp === "claude" || activeApp === "claude-science")
         ) {
           proxyRequiredReason = t("notifications.proxyReasonOpenAIResponses", {
             defaultValue: "使用 OpenAI Responses 接口格式",
@@ -257,6 +257,7 @@ export function useProviderActions(
         } else if (
           provider.meta?.isFullUrl &&
           (activeApp === "claude" ||
+            activeApp === "claude-science" ||
             activeApp === "codex" ||
             activeApp === "grokbuild")
         ) {

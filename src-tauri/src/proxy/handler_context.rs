@@ -149,8 +149,9 @@ impl RequestContext {
         // 聚合供应商：按请求模型的档位，把链上的聚合供应商替换为其路由目标 provider。
         // 展开后目标 provider 复用自身端点/认证，模型 env 已被覆写为路由模型名；
         // 未覆盖该档的聚合供应商被丢弃，由链上后续 provider 自动回退。
+        // claude-science 与 claude 同为 Anthropic Messages 协议，共享档位分类与聚合展开逻辑。
         let mut routed_provider_sources = std::collections::HashMap::new();
-        let providers = if app_type_str == "claude" {
+        let providers = if app_type_str == "claude" || app_type_str == "claude-science" {
             let tier = crate::proxy::model_mapper::classify_claude_tier(&request_model);
             let expansion = state
                 .provider_router

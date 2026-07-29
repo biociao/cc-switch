@@ -898,6 +898,37 @@ mod tests {
     }
 
     #[test]
+    fn validate_aggregate_routes_accepts_claude_science_app() {
+        with_test_home(|state, _| {
+            let kimi = Provider::with_id(
+                "kimi".into(),
+                "Kimi".into(),
+                json!({"env": {"ANTHROPIC_BASE_URL": "https://api.kimi.com"}}),
+                None,
+            );
+            state.db.save_provider("claude-science", &kimi).unwrap();
+
+            let agg = aggregate_provider_with_routes(
+                "agg",
+                AggregateRoutes {
+                    fable: Some(AggregateRoute {
+                        provider_id: "kimi".into(),
+                        model: "k3".into(),
+                    }),
+                    ..Default::default()
+                },
+            );
+
+            ProviderService::validate_aggregate_routes(
+                state.db.as_ref(),
+                &AppType::ClaudeScience,
+                &agg,
+            )
+            .expect("claude-science aggregate routes should pass");
+        });
+    }
+
+    #[test]
     fn switch_aggregate_provider_requires_proxy_takeover() {
         with_test_home(|state, _| {
             let target = Provider::with_id(
@@ -3587,6 +3618,12 @@ impl ProviderService {
             return Self::switch_normal(state, app_type, id, &providers);
         }
 
+        // Claude Science 没有 live 配置文件（配置在加密 SQLite 中），不存在
+        // 代理接管语义，切换只更新当前供应商，直接走 normal 路径。
+        if matches!(app_type, AppType::ClaudeScience) {
+            return Self::switch_normal(state, app_type, id, &providers);
+        }
+
         // Provider switches and takeover toggles both mutate live config and the
         // restore backup. Serialize them per app, then decide from the locked
         // current state so a just-started takeover cannot be overwritten by a
@@ -4068,6 +4105,7 @@ impl ProviderService {
         match app_type {
             AppType::Claude => Self::extract_claude_common_config(&provider.settings_config),
             AppType::ClaudeDesktop => Ok(String::new()),
+            AppType::ClaudeScience => Ok(String::new()), // Claude Science 无 live 文件，不使用通用配置片段
             AppType::Codex => Self::extract_codex_common_config(&provider.settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(&provider.settings_config),
             AppType::GrokBuild => Ok(String::new()),
@@ -4085,6 +4123,7 @@ impl ProviderService {
         match app_type {
             AppType::Claude => Self::extract_claude_common_config(settings_config),
             AppType::ClaudeDesktop => Ok(String::new()),
+            AppType::ClaudeScience => Ok(String::new()), // Claude Science 无 live 文件，不使用通用配置片段
             AppType::Codex => Self::extract_codex_common_config(settings_config),
             AppType::Gemini => Self::extract_gemini_common_config(settings_config),
             AppType::GrokBuild => Ok(String::new()),
@@ -4742,7 +4781,7 @@ impl ProviderService {
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
         match app_type {
-            AppType::Claude => {
+            AppType::Claude | AppType::ClaudeScience => {
                 if !provider.settings_config.is_object() {
                     return Err(AppError::localized(
                         "provider.claude.settings.not_object",
@@ -4887,11 +4926,11 @@ impl ProviderService {
         if !routes.has_any_route() {
             return Ok(());
         }
-        if !matches!(app_type, AppType::Claude) {
+        if !matches!(app_type, AppType::Claude | AppType::ClaudeScience) {
             return Err(AppError::localized(
                 "provider.aggregate.unsupported_app",
-                "聚合供应商仅支持 Claude 应用",
-                "Aggregate providers are only supported for the Claude app",
+                "聚合供应商仅支持 Claude / Claude Science 应用",
+                "Aggregate providers are only supported for the Claude and Claude Science apps",
             ));
         }
         if let Some(dependent) = Self::find_aggregate_dependent(db, app_type, provider.id.as_str())?
@@ -4988,7 +5027,8 @@ impl ProviderService {
         app_type: &AppType,
     ) -> Result<(String, String), AppError> {
         match app_type {
-            AppType::Claude => {
+            // Claude Science 与 Claude 同为 Anthropic env 结构，复用同一套凭据提取
+            AppType::Claude | AppType::ClaudeScience => {
                 let env = provider
                     .settings_config
                     .get("env")
