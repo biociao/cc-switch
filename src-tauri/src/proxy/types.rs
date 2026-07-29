@@ -116,6 +116,9 @@ pub struct ProxyTakeoverStatus {
     pub grokbuild: bool,
     pub opencode: bool,
     pub openclaw: bool,
+    /// Claude Science 没有 Live 配置文件，该标志仅表示其代理路由命名空间是否启用
+    #[serde(rename = "claude-science", default)]
+    pub claude_science: bool,
 }
 
 /// API 格式类型（预留，当前不需要格式转换）

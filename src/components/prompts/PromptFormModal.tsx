@@ -33,6 +33,7 @@ const PromptFormModal: React.FC<PromptFormModalProps> = ({
   const filenameMap: Record<Exclude<AppId, "openclaw">, string> = {
     claude: "CLAUDE.md",
     "claude-desktop": "CLAUDE.md",
+    "claude-science": "CLAUDE.md",
     codex: "AGENTS.md",
     gemini: "GEMINI.md",
     grokbuild: "AGENTS.md",

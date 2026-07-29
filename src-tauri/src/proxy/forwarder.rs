@@ -17,7 +17,8 @@ use super::{
     },
     thinking_budget_rectifier::{rectify_thinking_budget, should_rectify_thinking_budget},
     thinking_rectifier::{
-        normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
+        is_thinking_tool_choice_incompatibility, normalize_thinking_type,
+        rectify_anthropic_request, should_rectify_thinking_signature,
     },
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
@@ -126,6 +127,10 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
+    /// 聚合路由合成的 provider id → 来源聚合供应商 (id, name)：
+    /// 同一聚合的各档目标之间不切换"当前供应商"，
+    /// 但故障转移首次命中聚合时同步到该聚合供应商
+    routed_provider_sources: std::collections::HashMap<String, (String, String)>,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
     /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
@@ -205,6 +210,7 @@ impl RequestForwarder {
         failover_manager: Arc<FailoverSwitchManager>,
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
+        routed_provider_sources: std::collections::HashMap<String, (String, String)>,
         session_id: String,
         session_client_provided: bool,
         streaming_first_byte_timeout: u64,
@@ -226,6 +232,7 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            routed_provider_sources,
             session_id,
             session_client_provided,
             rectifier_config,
@@ -237,6 +244,26 @@ impl RequestForwarder {
             ),
             max_attempts,
         }
+    }
+
+    /// 成功后需要同步的"当前供应商"目标 `(id, name)`；不需要同步时返回 `None`。
+    ///
+    /// 聚合路由合成的 provider（`routed_provider_sources` 的键）不在各档目标之间切换，
+    /// 避免 UI/托盘随档位抖动；但故障转移首次命中聚合时，同步到来源聚合供应商，
+    /// 否则请求成功而 UI/持久化的当前供应商仍停留在已故障的 provider 上。
+    fn failover_switch_target(&self, provider: &Provider) -> Option<(String, String)> {
+        if let Some((aggregate_id, aggregate_name)) =
+            self.routed_provider_sources.get(&provider.id)
+        {
+            if self.current_provider_id_at_start != *aggregate_id {
+                return Some((aggregate_id.clone(), aggregate_name.clone()));
+            }
+            return None;
+        }
+        if self.current_provider_id_at_start != provider.id {
+            return Some((provider.id.clone(), provider.name.clone()));
+        }
+        None
     }
 
     async fn record_success_result(
@@ -510,16 +537,13 @@ impl RequestForwarder {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
                         status.last_error = None;
-                        let should_switch =
-                            self.current_provider_id_at_start.as_str() != provider.id.as_str();
-                        if should_switch {
+                        let switch_target = self.failover_switch_target(provider);
+                        if let Some((pid, pname)) = switch_target {
                             status.failover_count += 1;
 
                             // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
                             let fm = self.failover_manager.clone();
                             let ah = self.app_handle.clone();
-                            let pid = provider.id.clone();
-                            let pname = provider.name.clone();
                             let at = app_type_str.to_string();
 
                             tokio::spawn(async move {
@@ -613,15 +637,12 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
-                                                != provider.id.as_str();
-                                        if should_switch {
+                                        let switch_target =
+                                            self.failover_switch_target(provider);
+                                        if let Some((pid, pname)) = switch_target {
                                             status.failover_count += 1;
                                             let fm = self.failover_manager.clone();
                                             let ah = self.app_handle.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
                                             let at = app_type_str.to_string();
 
                                             tokio::spawn(async move {
@@ -700,22 +721,35 @@ impl RequestForwarder {
                                 });
                             }
 
-                            // 首次触发：整流请求体
+                            // 首次触发：整流请求体。部分 Anthropic 兼容上游会把
+                            // anthropic-beta: *thinking* 也视为 thinking mode，
+                            // 所以 tool_choice 冲突时也需要清理 header 后重试。
+                            let mut retry_headers = headers.clone();
+                            let removed_thinking_beta_headers =
+                                if is_thinking_tool_choice_incompatibility(error_message.as_deref())
+                                {
+                                    strip_thinking_beta_headers(&mut retry_headers)
+                                } else {
+                                    0
+                                };
                             let rectified = rectify_anthropic_request(&mut provider_body);
 
                             // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
-                            if !rectified.applied {
+                            if !rectified.applied && removed_thinking_beta_headers == 0 {
                                 log::warn!(
                                     "[{app_type_str}] [RECT-006] thinking 签名整流器触发但无可整流内容，继续检查 budget；若 budget 也未命中则按客户端错误返回"
                                 );
                                 signature_rectifier_non_retryable_client_error = true;
                             } else {
                                 log::info!(
-                                    "[{}] [RECT-001] thinking 签名整流器触发, 移除 {} thinking blocks, {} redacted_thinking blocks, {} signature fields",
+                                    "[{}] [RECT-001] thinking 签名整流器触发, 移除 {} thinking blocks, {} redacted_thinking blocks, {} signature fields, 调整 {} top-level thinking fields, 移除 {} effort fields, {} thinking beta headers",
                                     app_type_str,
                                     rectified.removed_thinking_blocks,
                                     rectified.removed_redacted_thinking_blocks,
-                                    rectified.removed_signature_fields
+                                    rectified.removed_signature_fields,
+                                    rectified.rewritten_top_level_thinking_fields,
+                                    rectified.removed_effort_fields,
+                                    removed_thinking_beta_headers
                                 );
 
                                 // 标记已重试（当前逻辑下重试后必定 return，保留标记以备将来扩展）
@@ -729,7 +763,7 @@ impl RequestForwarder {
                                         provider,
                                         endpoint,
                                         &provider_body,
-                                        &headers,
+                                        &retry_headers,
                                         &extensions,
                                         adapter.as_ref(),
                                     )
@@ -759,17 +793,14 @@ impl RequestForwarder {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
                                             status.last_error = None;
-                                            let should_switch =
-                                                self.current_provider_id_at_start.as_str()
-                                                    != provider.id.as_str();
-                                            if should_switch {
+                                            let switch_target =
+                                                self.failover_switch_target(provider);
+                                            if let Some((pid, pname)) = switch_target {
                                                 status.failover_count += 1;
 
                                                 // 异步触发供应商切换，更新 UI/托盘
                                                 let fm = self.failover_manager.clone();
                                                 let ah = self.app_handle.clone();
-                                                let pid = provider.id.clone();
-                                                let pname = provider.name.clone();
                                                 let at = app_type_str.to_string();
 
                                                 tokio::spawn(async move {
@@ -923,15 +954,12 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
-                                                != provider.id.as_str();
-                                        if should_switch {
+                                        let switch_target =
+                                            self.failover_switch_target(provider);
+                                        if let Some((pid, pname)) = switch_target {
                                             status.failover_count += 1;
                                             let fm = self.failover_manager.clone();
                                             let ah = self.app_handle.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
                                             let at = app_type_str.to_string();
                                             tokio::spawn(async move {
                                                 let _ = fm
@@ -3246,6 +3274,43 @@ fn headers_contain_proxy_placeholder(headers: &http::HeaderMap) -> bool {
     })
 }
 
+fn strip_thinking_beta_headers(headers: &mut http::HeaderMap) -> usize {
+    let mut kept = Vec::new();
+    let mut removed = 0usize;
+
+    for value in headers.get_all("anthropic-beta").iter() {
+        let Ok(value) = value.to_str() else {
+            removed += 1;
+            continue;
+        };
+
+        for part in value.split(',') {
+            let beta = part.trim();
+            if beta.is_empty() {
+                continue;
+            }
+            if beta.to_ascii_lowercase().contains("thinking") {
+                removed += 1;
+            } else {
+                kept.push(beta.to_string());
+            }
+        }
+    }
+
+    if removed == 0 {
+        return 0;
+    }
+
+    while headers.remove("anthropic-beta").is_some() {}
+    if !kept.is_empty() {
+        if let Ok(value) = http::HeaderValue::from_str(&kept.join(",")) {
+            headers.insert("anthropic-beta", value);
+        }
+    }
+
+    removed
+}
+
 fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,
@@ -3613,6 +3678,7 @@ mod tests {
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             app_handle: None,
             current_provider_id_at_start: String::new(),
+            routed_provider_sources: std::collections::HashMap::new(),
             session_id: String::new(),
             session_client_provided: false,
             rectifier_config: RectifierConfig::default(),
@@ -3622,6 +3688,69 @@ mod tests {
             streaming_first_byte_timeout,
             max_attempts: 1,
         }
+    }
+
+    #[test]
+    fn failover_switch_target_handles_aggregate_routed_providers() {
+        let mut forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
+        forwarder.current_provider_id_at_start = "agg".to_string();
+        forwarder
+            .routed_provider_sources
+            .insert("kimi".to_string(), ("agg".to_string(), "Agg".to_string()));
+
+        let kimi = Provider::with_id("kimi".to_string(), "Kimi".to_string(), json!({}), None);
+        let other = Provider::with_id("other".to_string(), "Other".to_string(), json!({}), None);
+        let agg = Provider::with_id("agg".to_string(), "Agg".to_string(), json!({}), None);
+
+        // 当前已是聚合供应商：命中其分档目标不切换，避免随档位来回抖动
+        assert_eq!(forwarder.failover_switch_target(&kimi), None);
+        // 普通故障转移目标：保持原有同步行为
+        assert_eq!(
+            forwarder.failover_switch_target(&other),
+            Some(("other".to_string(), "Other".to_string()))
+        );
+        // 当前供应商自身：不同步
+        assert_eq!(forwarder.failover_switch_target(&agg), None);
+    }
+
+    #[test]
+    fn failover_switch_target_switches_to_source_aggregate_after_failover() {
+        let mut forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
+        // 请求开始时当前供应商是已故障的普通 provider
+        forwarder.current_provider_id_at_start = "failed".to_string();
+        forwarder
+            .routed_provider_sources
+            .insert("kimi".to_string(), ("agg".to_string(), "Agg".to_string()));
+
+        let kimi = Provider::with_id("kimi".to_string(), "Kimi".to_string(), json!({}), None);
+
+        // 故障转移经聚合供应商成功：逻辑"当前供应商"应同步到聚合供应商本身，
+        // 而不是分档目标，也不停留在已故障的 provider 上
+        assert_eq!(
+            forwarder.failover_switch_target(&kimi),
+            Some(("agg".to_string(), "Agg".to_string()))
+        );
+    }
+
+    #[test]
+    fn strip_thinking_beta_headers_keeps_non_thinking_betas() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static(
+                "claude-code-20250219, interleaved-thinking-2025-05-14, context-1m-2025-08-07",
+            ),
+        );
+
+        let removed = strip_thinking_beta_headers(&mut headers);
+
+        assert_eq!(removed, 1);
+        assert_eq!(
+            headers
+                .get("anthropic-beta")
+                .and_then(|value| value.to_str().ok()),
+            Some("claude-code-20250219,context-1m-2025-08-07")
+        );
     }
 
     #[test]

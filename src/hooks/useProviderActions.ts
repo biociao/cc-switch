@@ -30,6 +30,7 @@ import {
   supportsOfficialProxyTakeover,
 } from "@/utils/providerCapabilities";
 import { isOAuthProviderType } from "@/config/constants";
+import { isAggregateProvider } from "@/utils/aggregateRoutes";
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -160,8 +161,22 @@ export function useProviderActions(
   // 切换供应商
   const switchProvider = useCallback(
     async (provider: Provider) => {
+      if (
+        (activeApp === "claude" || activeApp === "claude-science") &&
+        isAggregateProvider(provider) &&
+        !isProxyTakeover
+      ) {
+        toast.error(
+          t("notifications.aggregateRequiresTakeover", {
+            defaultValue:
+              "聚合供应商需要代理接管模式。请先开启代理接管，再进行切换。",
+          }),
+        );
+        return;
+      }
+
       const isCopilotProvider =
-        activeApp === "claude" &&
+        (activeApp === "claude" || activeApp === "claude-science") &&
         provider.meta?.providerType === "github_copilot";
       const isCodexChatFormat =
         (activeApp === "codex" || activeApp === "grokbuild") &&
@@ -209,14 +224,14 @@ export function useProviderActions(
           });
         } else if (
           provider.meta?.apiFormat === "openai_chat" &&
-          activeApp === "claude"
+          (activeApp === "claude" || activeApp === "claude-science")
         ) {
           proxyRequiredReason = t("notifications.proxyReasonOpenAIChat", {
             defaultValue: "使用 OpenAI Chat 接口格式",
           });
         } else if (
           provider.meta?.apiFormat === "openai_responses" &&
-          activeApp === "claude"
+          (activeApp === "claude" || activeApp === "claude-science")
         ) {
           proxyRequiredReason = t("notifications.proxyReasonOpenAIResponses", {
             defaultValue: "使用 OpenAI Responses 接口格式",
@@ -242,6 +257,7 @@ export function useProviderActions(
         } else if (
           provider.meta?.isFullUrl &&
           (activeApp === "claude" ||
+            activeApp === "claude-science" ||
             activeApp === "codex" ||
             activeApp === "grokbuild")
         ) {

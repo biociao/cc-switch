@@ -128,13 +128,15 @@ export function useProxyStatus() {
       const appLabel =
         variables.appType === "claude"
           ? "Claude"
-          : variables.appType === "codex"
-            ? "Codex"
-            : variables.appType === "gemini"
-              ? "Gemini"
-              : variables.appType === "grokbuild"
-                ? "Grok Build"
-                : "OpenCode";
+          : variables.appType === "claude-science"
+            ? "Claude Science"
+            : variables.appType === "codex"
+              ? "Codex"
+              : variables.appType === "gemini"
+                ? "Gemini"
+                : variables.appType === "grokbuild"
+                  ? "Grok Build"
+                  : "OpenCode";
 
       toast.success(
         variables.enabled
@@ -215,6 +217,7 @@ export function useProxyStatus() {
     takeoverStatus,
     isTakeoverActive:
       takeoverStatus?.claude ||
+      takeoverStatus?.["claude-science"] ||
       takeoverStatus?.codex ||
       takeoverStatus?.gemini ||
       takeoverStatus?.grokbuild ||

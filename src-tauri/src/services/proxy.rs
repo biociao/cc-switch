@@ -103,7 +103,11 @@ impl ProxyService {
             ClaudeTakeoverAuthPolicy::PreserveExistingOrAuthToken
         };
         // Copilot/Codex 接管时 live config 可能还是旧供应商；显示模型必须跟随目标 provider。
-        let takeover_model_fields = if provider.uses_managed_account_auth() {
+        let takeover_model_fields = if provider.is_aggregate() {
+            // 聚合供应商自身没有模型 env；对已配置路由的档位写入稳定别名，
+            // 让 Claude Code 发出可分类的别名模型名，由代理按档分流。
+            Self::build_aggregate_takeover_model_fields(provider)
+        } else if provider.uses_managed_account_auth() {
             Self::build_claude_takeover_model_fields(&provider.settings_config)
         } else {
             Self::build_claude_takeover_model_fields(config)
@@ -274,6 +278,64 @@ impl ProxyService {
         if let Some(subagent_model) = subagent_model {
             fields.push(("CLAUDE_CODE_SUBAGENT_MODEL", subagent_model.to_string()));
         }
+        fields
+    }
+
+    /// 聚合供应商的接管模型字段：对已配置路由的档位写入稳定别名，
+    /// 显示名使用该档路由的上游模型名（剥离 [1M] 标记）。
+    fn build_aggregate_takeover_model_fields(provider: &Provider) -> Vec<(&'static str, String)> {
+        let mut fields = Vec::new();
+        let Some(routes) = provider.aggregate_routes() else {
+            return fields;
+        };
+
+        // env 仅用于 NAME 键查表；聚合供应商没有模型 env，传空表，
+        // 显示名自然回退为路由的上游模型名。
+        let empty_env = Map::new();
+        let mut push = |model_key: &'static str,
+                        name_key: &'static str,
+                        takeover_model: &'static str,
+                        supports_one_m: bool,
+                        route: Option<&crate::provider::AggregateRoute>| {
+            Self::push_claude_takeover_role_fields(
+                &mut fields,
+                &empty_env,
+                model_key,
+                name_key,
+                takeover_model,
+                supports_one_m,
+                route.map(|r| r.model.as_str()),
+            );
+        };
+
+        push(
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            CLAUDE_TAKEOVER_HAIKU_MODEL,
+            false,
+            routes.haiku.as_ref(),
+        );
+        push(
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            CLAUDE_TAKEOVER_SONNET_MODEL,
+            true,
+            routes.sonnet.as_ref(),
+        );
+        push(
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            CLAUDE_TAKEOVER_OPUS_MODEL,
+            true,
+            routes.opus.as_ref(),
+        );
+        push(
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+            CLAUDE_TAKEOVER_FABLE_MODEL,
+            true,
+            routes.fable.as_ref(),
+        );
         fields
     }
 
@@ -602,6 +664,14 @@ impl ProxyService {
         Ok(true)
     }
 
+    /// Ensure the local proxy is running and return the Anthropic-compatible
+    /// base URL that external clients can connect to.
+    pub async fn ensure_running_and_get_proxy_url(&self) -> Result<String, String> {
+        self.start().await?;
+        let (proxy_url, _) = self.build_proxy_urls().await?;
+        Ok(proxy_url)
+    }
+
     /// 启动代理服务器（带 Live 配置接管）
     pub async fn start_with_takeover(&self) -> Result<ProxyServerInfo, String> {
         // 1. 备份各应用的 Live 配置
@@ -712,6 +782,13 @@ impl ProxyService {
         // OpenCode and OpenClaw don't support proxy features, always return false
         let opencode_enabled = false;
         let openclaw_enabled = false;
+        // Claude Science 无 Live 配置，enabled 仅是路由命名空间开关
+        let claude_science_enabled = self
+            .db
+            .get_proxy_config_for_app("claude-science")
+            .await
+            .map(|c| c.enabled)
+            .unwrap_or(false);
 
         Ok(ProxyTakeoverStatus {
             claude: claude_enabled,
@@ -720,6 +797,7 @@ impl ProxyService {
             grokbuild: grokbuild_enabled,
             opencode: opencode_enabled,
             openclaw: openclaw_enabled,
+            claude_science: claude_science_enabled,
         })
     }
 
@@ -731,6 +809,13 @@ impl ProxyService {
         let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
         let app_type_str = app.as_str();
         let _guard = self.switch_locks.lock_for_app(app_type_str).await;
+
+        // Claude Science 没有 Live 配置文件可备份/改写（其认证在加密 SQLite 中，
+        // 守护进程启动时即指向本地代理路由）。它的"接管"只是 proxy_config.enabled
+        // 标志翻转，用于解锁热切换/聚合供应商/故障转移语义，跳过全部 Live 文件步骤。
+        if matches!(app, AppType::ClaudeScience) {
+            return self.set_takeover_live_less(&app, enabled).await;
+        }
 
         if enabled {
             // 1) 代理服务未运行则自动启动
@@ -861,6 +946,26 @@ impl ProxyService {
             return Ok(()); // 未接管，幂等返回
         }
 
+        // 聚合供应商没有可直写的上游端点与凭据，只能在接管持有 Live 时作为
+        // 逻辑路由目标。若在它仍为当前供应商时关闭接管，备份恢复后 Live 是旧
+        // 供应商的配置，而 current 仍指向聚合供应商，UI/路由口径不一致。
+        // 要求先热切换到常规供应商，再关闭接管。
+        if matches!(app, AppType::Claude) {
+            if let Ok(Some(current_id)) =
+                crate::settings::get_effective_current_provider(&self.db, &app)
+            {
+                if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str)
+                {
+                    if provider.is_aggregate() {
+                        return Err(
+                            "当前供应商为聚合供应商，请先切换到常规供应商后再关闭代理接管 (An aggregate provider is current; switch to a regular provider before disabling proxy takeover)"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
         // 1) 恢复 Live 配置
         //
         // 必须走 with_fallback 版本：备份 → SSOT → 清理占位符 的三层兜底。
@@ -913,6 +1018,107 @@ impl ProxyService {
         Ok(())
     }
 
+    /// 无 Live 配置文件应用的接管开关（当前仅 Claude Science）：纯标志翻转。
+    ///
+    /// 与 `set_takeover_for_app` 的常规路径相比，跳过 Live 备份/恢复/改写等全部
+    /// 文件步骤——这类应用的客户端在启动时即指向本地代理路由，供应商与故障转移
+    /// 信息全部由代理在请求时从数据库解析。
+    async fn set_takeover_live_less(&self, app: &AppType, enabled: bool) -> Result<(), String> {
+        let app_type_str = app.as_str();
+
+        if enabled {
+            // 1) 代理服务未运行则自动启动
+            if !self.is_running().await {
+                self.start().await?;
+            }
+
+            // 2) 已启用则幂等返回
+            let current_config = self
+                .db
+                .get_proxy_config_for_app(app_type_str)
+                .await
+                .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
+            if current_config.enabled {
+                self.refresh_active_target_from_current_provider(app).await;
+                return Ok(());
+            }
+
+            // 3) 设置 proxy_config.enabled = true
+            let mut updated_config = current_config;
+            updated_config.enabled = true;
+            self.db
+                .update_proxy_config_for_app(updated_config)
+                .await
+                .map_err(|e| format!("设置 {app_type_str} enabled 状态失败: {e}"))?;
+            let _ = self.db.set_live_takeover_active(true).await;
+
+            self.refresh_active_target_from_current_provider(app).await;
+
+            // 4) 官方供应商走代理有封号风险，沿用通用告警
+            if let Ok(Some(current_id)) =
+                crate::settings::get_effective_current_provider(&self.db, app)
+            {
+                if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
+                    if provider.category.as_deref() == Some("official")
+                        && !crate::services::provider::official_provider_supports_proxy_takeover(
+                            app, &provider,
+                        )
+                    {
+                        if let Some(handle) = self.app_handle.read().await.as_ref() {
+                            let _ = handle.emit(
+                                "proxy-official-warning",
+                                serde_json::json!({
+                                    "appType": app_type_str,
+                                    "providerName": provider.name,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+
+            return Ok(());
+        }
+
+        // 关闭：幂等检查
+        let current_config = self
+            .db
+            .get_proxy_config_for_app(app_type_str)
+            .await
+            .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
+        if !current_config.enabled {
+            return Ok(());
+        }
+
+        // 无 Live 可恢复，直接清标志与健康状态
+        let mut updated_config = current_config;
+        updated_config.enabled = false;
+        self.db
+            .update_proxy_config_for_app(updated_config)
+            .await
+            .map_err(|e| format!("清除 {app_type_str} enabled 状态失败: {e}"))?;
+
+        self.db
+            .clear_provider_health_for_app(app_type_str)
+            .await
+            .map_err(|e| format!("清除 {app_type_str} 健康状态失败: {e}"))?;
+
+        // 若无其它接管，更新旧标志并停止代理服务
+        let any_enabled = self
+            .db
+            .is_live_takeover_active()
+            .await
+            .map_err(|e| format!("检查接管状态失败: {e}"))?;
+        if !any_enabled {
+            let _ = self.db.set_live_takeover_active(false).await;
+            if self.is_running().await {
+                let _ = self.stop().await;
+            }
+        }
+
+        Ok(())
+    }
+
     /// 同步关闭指定应用的 Live 接管（恢复配置并清标志，不停止代理服务）。
     ///
     /// 用于 `ProfileService::apply` 等 sync 路径：调用者所在线程可能没有 Tokio
@@ -924,6 +1130,22 @@ impl ProxyService {
     /// 代理或程序退出时会自然停止。
     pub fn disable_takeover_for_app_sync(&self, app_type: &AppType) -> Result<(), String> {
         let app_type_str = app_type.as_str();
+
+        // 无 Live 配置文件的应用（Claude Science）：跳过恢复/备份删除，仅清标志
+        if matches!(app_type, AppType::ClaudeScience) {
+            let mut config =
+                futures::executor::block_on(self.db.get_proxy_config_for_app(app_type_str))
+                    .map_err(|e| format!("获取 {app_type_str} 配置失败: {e}"))?;
+            if config.enabled {
+                config.enabled = false;
+                futures::executor::block_on(self.db.update_proxy_config_for_app(config))
+                    .map_err(|e| format!("清除 {app_type_str} enabled 状态失败: {e}"))?;
+            }
+            futures::executor::block_on(self.db.clear_provider_health_for_app(app_type_str))
+                .map_err(|e| format!("清除 {app_type_str} 健康状态失败: {e}"))?;
+            let _ = futures::executor::block_on(self.db.set_live_takeover_active(false));
+            return Ok(());
+        }
 
         // 1) 恢复原始 Live 配置（备份 → SSOT → 清理占位符 三层兜底）
         futures::executor::block_on(self.restore_live_config_for_app_with_fallback_inner(app_type))
@@ -2331,6 +2553,13 @@ impl ProxyService {
         app_type: &str,
         provider: &Provider,
     ) -> Result<(), String> {
+        // 聚合供应商的 settings_config 是占位空配置，不含可直写的上游端点与
+        // 凭据。若用它覆盖备份，关闭接管时会把 `{}` 恢复进 Live，导致 Claude
+        // Code 无法连接。保留上一份常规供应商的备份作为恢复来源。
+        if provider.is_aggregate() {
+            log::info!("{app_type} 目标为聚合供应商，保留现有 Live 备份（热切换）");
+            return Ok(());
+        }
         let app_type_enum =
             AppType::from_str(app_type).map_err(|_| format!("未知的应用类型: {app_type}"))?;
         let mut effective_settings =
@@ -3215,7 +3444,7 @@ impl ProxyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::ProviderMeta;
+    use crate::provider::{AggregateRoute, AggregateRoutes, ProviderMeta};
     use serial_test::serial;
     use std::env;
     use tempfile::TempDir;
@@ -3301,6 +3530,349 @@ mod tests {
             .expect("serialize models_cache"),
         )
         .expect("write models_cache.json");
+    }
+
+    #[test]
+    fn aggregate_claude_takeover_writes_stable_aliases_for_configured_tiers() {
+        let mut provider = Provider::with_id(
+            "agg".to_string(),
+            "Aggregate".to_string(),
+            json!({"env": {"ANTHROPIC_AUTH_TOKEN": "placeholder"}}),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                haiku: Some(AggregateRoute {
+                    provider_id: "deepseek".to_string(),
+                    model: "deepseek-v4-pro".to_string(),
+                }),
+                fable: Some(AggregateRoute {
+                    provider_id: "kimi".to_string(),
+                    model: "k3".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let mut live_config = provider.settings_config.clone();
+        ProxyService::apply_claude_takeover_fields_for_provider(
+            &mut live_config,
+            "http://127.0.0.1:15721",
+            &provider,
+        );
+
+        let env = live_config
+            .get("env")
+            .and_then(|value| value.as_object())
+            .expect("env should exist");
+
+        // 配置了路由的档：写入稳定别名 + 以上游模型名为显示名
+        assert_env_str(
+            env,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            Some("claude-haiku-4-5"),
+        );
+        assert_env_str(
+            env,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            Some("deepseek-v4-pro"),
+        );
+        assert_env_str(env, "ANTHROPIC_DEFAULT_FABLE_MODEL", Some("claude-fable-5"));
+        assert_env_str(env, "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME", Some("k3"));
+        // 未配置路由的档：不写别名
+        assert_env_str(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", None);
+        assert_env_str(env, "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", None);
+        assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", None);
+        // 接管基础字段仍生效
+        assert_env_str(env, "ANTHROPIC_BASE_URL", Some("http://127.0.0.1:15721"));
+    }
+
+    #[test]
+    fn aggregate_claude_takeover_propagates_one_m_marker_from_route_model() {
+        let mut provider = Provider::with_id(
+            "agg".to_string(),
+            "Aggregate".to_string(),
+            json!({"env": {"ANTHROPIC_AUTH_TOKEN": "placeholder"}}),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                haiku: Some(AggregateRoute {
+                    provider_id: "deepseek".to_string(),
+                    model: "deepseek-v4-flash[1M]".to_string(),
+                }),
+                opus: Some(AggregateRoute {
+                    provider_id: "kimi".to_string(),
+                    model: "k3[1M]".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let mut live_config = provider.settings_config.clone();
+        ProxyService::apply_claude_takeover_fields_for_provider(
+            &mut live_config,
+            "http://127.0.0.1:15721",
+            &provider,
+        );
+
+        let env = live_config
+            .get("env")
+            .and_then(|value| value.as_object())
+            .expect("env should exist");
+
+        // 路由模型带 [1M] 标记且该档支持 1M：别名追加 [1M]，显示名剥离标记
+        assert_env_str(
+            env,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            Some("claude-opus-4-8[1M]"),
+        );
+        assert_env_str(env, "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME", Some("k3"));
+        // haiku 档不支持 1M：即使路由模型带标记，别名也不追加
+        assert_env_str(
+            env,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            Some("claude-haiku-4-5"),
+        );
+        assert_env_str(
+            env,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            Some("deepseek-v4-flash"),
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn hot_switch_to_aggregate_preserves_existing_live_backup() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let target = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.p1.example",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-p1"
+                }
+            }),
+            None,
+        );
+        db.save_provider("claude", &target)
+            .expect("save target provider");
+
+        let mut aggregate = Provider::with_id(
+            "agg".to_string(),
+            "Aggregate".to_string(),
+            // 聚合供应商的 settings_config 是占位空配置
+            json!({}),
+            None,
+        );
+        aggregate.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                sonnet: Some(AggregateRoute {
+                    provider_id: "p1".to_string(),
+                    model: "some-model".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("claude", &aggregate)
+            .expect("save aggregate provider");
+
+        db.set_current_provider("claude", "p1")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
+            .expect("set local current provider");
+
+        // 接管开启时留下的可恢复备份（常规供应商配置）
+        let restorable_backup = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.p1.example",
+                "ANTHROPIC_AUTH_TOKEN": "sk-p1"
+            }
+        });
+        db.save_live_backup("claude", &restorable_backup.to_string())
+            .await
+            .expect("seed live backup");
+
+        service
+            .hot_switch_provider("claude", "agg")
+            .await
+            .expect("hot switch to aggregate provider");
+
+        let backup = db
+            .get_live_backup("claude")
+            .await
+            .expect("read live backup")
+            .expect("backup should still exist");
+        let backup_value: Value =
+            serde_json::from_str(&backup.original_config).expect("parse backup");
+        assert_eq!(
+            backup_value, restorable_backup,
+            "aggregate hot switch must keep the previous restorable backup"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn disable_takeover_with_aggregate_current_is_rejected() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let target = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-p1"}}),
+            None,
+        );
+        db.save_provider("claude", &target)
+            .expect("save target provider");
+
+        let mut aggregate = Provider::with_id(
+            "agg".to_string(),
+            "Aggregate".to_string(),
+            json!({}),
+            None,
+        );
+        aggregate.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                sonnet: Some(AggregateRoute {
+                    provider_id: "p1".to_string(),
+                    model: "some-model".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("claude", &aggregate)
+            .expect("save aggregate provider");
+
+        db.set_current_provider("claude", "agg")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("agg"))
+            .expect("set local current provider");
+
+        // 接管开启 + 备份存在
+        let mut app_config = db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read app proxy config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover");
+        db.save_live_backup("claude", r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-p1"}}"#)
+            .await
+            .expect("seed live backup");
+
+        let err = service
+            .set_takeover_for_app("claude", false)
+            .await
+            .expect_err("disabling takeover with aggregate current must be rejected");
+        assert!(err.contains("聚合"), "got {err}");
+
+        // 接管状态与备份保持不变
+        assert!(db
+            .get_proxy_config_for_app("claude")
+            .await
+            .expect("read app proxy config")
+            .enabled);
+        assert!(db
+            .get_live_backup("claude")
+            .await
+            .expect("read backup")
+            .is_some());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn claude_science_takeover_is_flag_only() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        // 未启用时关闭：幂等成功（不触发任何 Live 恢复逻辑）
+        service
+            .set_takeover_for_app("claude-science", false)
+            .await
+            .expect("disable before enable should be idempotent");
+
+        // 当前为聚合供应商：claude 会被拒绝关闭接管，claude-science 无 Live
+        // 口径不一致问题，允许直接关闭。
+        let target = Provider::with_id(
+            "p1".to_string(),
+            "P1".to_string(),
+            json!({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-p1"}}),
+            None,
+        );
+        db.save_provider("claude-science", &target)
+            .expect("save target provider");
+        let mut aggregate = Provider::with_id(
+            "agg".to_string(),
+            "Aggregate".to_string(),
+            json!({}),
+            None,
+        );
+        aggregate.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                sonnet: Some(AggregateRoute {
+                    provider_id: "p1".to_string(),
+                    model: "some-model".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        db.save_provider("claude-science", &aggregate)
+            .expect("save aggregate provider");
+        db.set_current_provider("claude-science", "agg")
+            .expect("set db current provider");
+        crate::settings::set_current_provider(&AppType::ClaudeScience, Some("agg"))
+            .expect("set local current provider");
+
+        let mut app_config = db
+            .get_proxy_config_for_app("claude-science")
+            .await
+            .expect("read app proxy config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable takeover flag");
+        db.set_live_takeover_active(true)
+            .await
+            .expect("set any-of flag");
+
+        service
+            .set_takeover_for_app("claude-science", false)
+            .await
+            .expect("flag-only disable should succeed without live backup");
+
+        assert!(
+            !db.get_proxy_config_for_app("claude-science")
+                .await
+                .expect("read app proxy config")
+                .enabled,
+            "claude-science takeover flag should be cleared"
+        );
+        assert!(
+            db.get_live_backup("claude-science")
+                .await
+                .expect("read backup")
+                .is_none(),
+            "flag-only path must not create live backups"
+        );
     }
 
     #[test]
