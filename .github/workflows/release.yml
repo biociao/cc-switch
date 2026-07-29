@@ -243,6 +243,11 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          # 无 Apple 证书（fork 构建）：苹果系变量为空字符串也会被 tauri 当作
+          # "需要公证"的信号（Team ID 校验报错），显式 unset 跳过公证
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             echo "=== macOS build/notarization attempt ${attempt}/${max_attempts} ==="
