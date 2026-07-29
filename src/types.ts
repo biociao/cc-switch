@@ -308,6 +308,7 @@ export type ClaudeApiKeyField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY";
 export interface VisibleApps {
   claude: boolean;
   "claude-desktop": boolean;
+  "claude-science": boolean;
   codex: boolean;
   gemini: boolean;
   grokbuild: boolean;
@@ -439,6 +440,8 @@ export interface Settings {
   currentProviderClaude?: string;
   // 当前 Claude Desktop 供应商 ID（优先于数据库 is_current）
   currentProviderClaudeDesktop?: string;
+  // 当前 Claude Science 供应商 ID（优先于数据库 is_current）
+  currentProviderClaudeScience?: string;
   // 当前 Codex 供应商 ID（优先于数据库 is_current）
   currentProviderCodex?: string;
   // 当前 Gemini 供应商 ID（优先于数据库 is_current）

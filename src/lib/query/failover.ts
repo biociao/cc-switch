@@ -225,11 +225,13 @@ export function useSetAutoFailoverEnabled() {
       const appLabel =
         variables.appType === "claude"
           ? "Claude"
-          : variables.appType === "codex"
-            ? "Codex"
-            : variables.appType === "grokbuild"
-              ? "Grok Build"
-              : "Gemini";
+          : variables.appType === "claude-science"
+            ? "Claude Science"
+            : variables.appType === "codex"
+              ? "Codex"
+              : variables.appType === "grokbuild"
+                ? "Grok Build"
+                : "Gemini";
 
       toast.success(
         variables.enabled
