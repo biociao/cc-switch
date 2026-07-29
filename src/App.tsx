@@ -25,6 +25,8 @@ import {
   Shield,
   Cpu,
   LayoutDashboard,
+  Microscope,
+  Loader2,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
@@ -32,6 +34,7 @@ import type { EnvConflict } from "@/types/env";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import {
   providersApi,
+  claudeScienceApi,
   settingsApi,
   type AppId,
   type ProviderSwitchEvent,
@@ -125,6 +128,7 @@ const STORAGE_KEY = "cc-switch-last-app";
 const VALID_APPS: AppId[] = [
   "claude",
   "claude-desktop",
+  "claude-science",
   "codex",
   "gemini",
   "grokbuild",
@@ -193,6 +197,8 @@ function App() {
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
     claude: true,
     "claude-desktop": true,
+    // Claude Science 默认不显示（可在设置中勾选）
+    "claude-science": false,
     codex: true,
     gemini: true,
     grokbuild: true,
@@ -204,6 +210,7 @@ function App() {
   const getFirstVisibleApp = (): AppId => {
     if (visibleApps.claude) return "claude";
     if (visibleApps["claude-desktop"]) return "claude-desktop";
+    if (visibleApps["claude-science"]) return "claude-science";
     if (visibleApps.codex) return "codex";
     if (visibleApps.gemini) return "gemini";
     if (visibleApps.grokbuild) return "grokbuild";
@@ -243,6 +250,8 @@ function App() {
   } | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflict[]>([]);
   const [showEnvBanner, setShowEnvBanner] = useState(false);
+  const [isLaunchingClaudeScience, setIsLaunchingClaudeScience] =
+    useState(false);
 
   const effectiveEditingProvider = useLastValidValue(editingProvider);
   const effectiveUsageProvider = useLastValidValue(usageProvider);
@@ -291,7 +300,8 @@ function App() {
       currentView === "openclawAgents");
   const { data: openclawHealthWarnings = [] } =
     useOpenClawHealth(isOpenClawView);
-  const hasSkillsSupport = sharedFeatureApp !== "openclaw";
+  const hasSkillsSupport =
+    sharedFeatureApp !== "openclaw" && sharedFeatureApp !== "claude-science";
   const hasSessionSupport =
     sharedFeatureApp === "claude" ||
     sharedFeatureApp === "codex" ||
@@ -346,6 +356,24 @@ function App() {
         );
       },
     });
+  };
+
+  const handleLaunchClaudeScience = async () => {
+    if (isLaunchingClaudeScience) {
+      return;
+    }
+
+    setIsLaunchingClaudeScience(true);
+    try {
+      await claudeScienceApi.launchWithProxy();
+      toast.success(t("claudeScience.launchSuccess"));
+    } catch (error) {
+      toast.error(t("claudeScience.launchFailed"), {
+        description: extractErrorMessage(error),
+      });
+    } finally {
+      setIsLaunchingClaudeScience(false);
+    }
   };
 
   useEffect(() => {
@@ -1255,6 +1283,24 @@ function App() {
                   className="flex shrink-0 items-center gap-1.5"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
+                  {(activeApp === "claude" || activeApp === "claude-science") &&
+                    settingsData?.enableLocalProxy && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={handleLaunchClaudeScience}
+                        disabled={isLaunchingClaudeScience}
+                        title={t("claudeScience.launch")}
+                        aria-label={t("claudeScience.launch")}
+                        className="hover:bg-black/5 dark:hover:bg-white/5"
+                      >
+                        {isLaunchingClaudeScience ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Microscope className="w-4 h-4" />
+                        )}
+                      </Button>
+                    )}
                   {activeApp === "claude-desktop" ? (
                     <ClaudeDesktopRouteToggle />
                   ) : (
@@ -1524,15 +1570,18 @@ function App() {
                               >
                                 <Wrench className="flex-shrink-0 w-4 h-4" />
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("prompts")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("prompts.manage")}
-                              >
-                                <Book className="w-4 h-4" />
-                              </Button>
+                              {/* claude-science 无 live 配置文件，不提供提示词管理 */}
+                              {activeApp !== "claude-science" && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setCurrentView("prompts")}
+                                  className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                                  title={t("prompts.manage")}
+                                >
+                                  <Book className="w-4 h-4" />
+                                </Button>
+                              )}
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -1590,6 +1639,7 @@ function App() {
         onOpenChange={setIsAddOpen}
         appId={activeApp}
         onSubmit={addProvider}
+        availableProviders={Object.values(providers)}
       />
 
       <EditProviderDialog
@@ -1603,6 +1653,7 @@ function App() {
         onSubmit={handleEditProvider}
         appId={activeApp}
         isProxyTakeover={isCurrentAppTakeoverActive}
+        availableProviders={Object.values(providers)}
       />
 
       {effectiveUsageProvider && (

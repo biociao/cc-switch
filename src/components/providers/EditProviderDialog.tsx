@@ -20,6 +20,7 @@ interface EditProviderDialogProps {
   }) => Promise<void> | void;
   appId: AppId;
   isProxyTakeover?: boolean; // 代理接管模式下不读取 live（避免显示被接管后的代理配置）
+  availableProviders?: Provider[];
 }
 
 export function EditProviderDialog({
@@ -29,6 +30,7 @@ export function EditProviderDialog({
   onSubmit,
   appId,
   isProxyTakeover = false,
+  availableProviders = [],
 }: EditProviderDialogProps) {
   const { t } = useTranslation();
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
@@ -70,6 +72,15 @@ export function EditProviderDialog({
       // Reading live config would return the full opencode.json (with $schema, provider, mcp etc.)
       // instead of just the provider fragment, causing incorrect nested structure on save
       if (appId === "opencode") {
+        if (!cancelled) {
+          setLiveSettings(null);
+          setHasLoadedLive(true);
+        }
+        return;
+      }
+
+      // Claude Science 没有 live 配置文件（经本地代理路由），直接使用 SSOT 配置
+      if (appId === "claude-science") {
         if (!cancelled) {
           setLiveSettings(null);
           setHasLoadedLive(true);
@@ -248,6 +259,7 @@ export function EditProviderDialog({
         initialData={initialData}
         showButtons={false}
         isProxyTakeover={isProxyTakeover}
+        availableProviders={availableProviders}
       />
     </FullScreenPanel>
   );
