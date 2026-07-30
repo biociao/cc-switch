@@ -1023,6 +1023,42 @@ mod tests {
     }
 
     #[test]
+    fn update_active_aggregate_provider_without_takeover_is_allowed() {
+        with_test_home(|state, _| {
+            let target = Provider::with_id("kimi".into(), "Kimi".into(), json!({}), None);
+            state.db.save_provider("claude", &target).unwrap();
+
+            let routes = AggregateRoutes {
+                sonnet: Some(AggregateRoute {
+                    provider_id: "kimi".into(),
+                    model: "k3".into(),
+                }),
+                ..Default::default()
+            };
+            let aggregate = aggregate_provider_with_routes("aggregate", routes.clone());
+            state.db.save_provider("claude", &aggregate).unwrap();
+            state.db.set_current_provider("claude", "aggregate").unwrap();
+            crate::settings::set_current_provider(&AppType::Claude, Some("aggregate"))
+                .unwrap();
+
+            // Editing an already-aggregate active provider (e.g. renaming it) is not
+            // a conversion and must not require proxy takeover.
+            let mut edited = aggregate_provider_with_routes("aggregate", routes);
+            edited.name = "Aggregate v2".into();
+
+            ProviderService::update(state, AppType::Claude, None, edited)
+                .expect("editing an already-aggregate active provider must succeed");
+            let saved = state
+                .db
+                .get_provider_by_id("aggregate", "claude")
+                .unwrap()
+                .unwrap();
+            assert!(saved.is_aggregate());
+            assert_eq!(saved.name, "Aggregate v2");
+        });
+    }
+
+    #[test]
     fn delete_referenced_aggregate_target_is_rejected() {
         with_test_home(|state, _| {
             let target = Provider::with_id("kimi".into(), "Kimi".into(), json!({}), None);
@@ -3354,12 +3390,18 @@ impl ProviderService {
 
         // For other apps: Check if this is current provider (use effective current, not just DB).
         // Converting the active provider into a route-only aggregate without takeover would
-        // replace the client's usable endpoint with an empty aggregate config.
+        // replace the client's usable endpoint with an empty aggregate config. The guard only
+        // covers that conversion: editing a provider that already is aggregate (including
+        // turning aggregation off) must stay allowed regardless of takeover state.
         let effective_current =
             crate::settings::get_effective_current_provider(&state.db, &app_type)?;
         let is_current = effective_current.as_deref() == Some(provider.id.as_str());
+        let was_aggregate = existing_provider
+            .as_ref()
+            .is_some_and(|existing| existing.is_aggregate());
         if is_current
             && provider.is_aggregate()
+            && !was_aggregate
             && !Self::proxy_takeover_owns_live(state, &app_type)
         {
             return Err(AppError::localized(

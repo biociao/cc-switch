@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
-import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
+import { GripVertical, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 import type {
   DraggableAttributes,
   DraggableSyntheticListeners,
@@ -29,8 +30,12 @@ import {
 } from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import { usageKeys } from "@/lib/query/usage";
 import { resolveProviderIcon } from "@/utils/providerIcon";
-import { isAggregateProvider } from "@/utils/aggregateRoutes";
+import {
+  getAggregateRouteTargetIds,
+  isAggregateProvider,
+} from "@/utils/aggregateRoutes";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -253,6 +258,31 @@ export function ProviderCard({
     enabled: usageEnabled && !isOfficial && !isOfficialSubscriptionUsage,
     autoQueryInterval,
   });
+
+  // 聚合供应商自身没有用量脚本；提供一键刷新，让路由到的各目标供应商同时刷新用量。
+  // invalidateQueries 只重取已启用且已挂载的用量查询，未配置用量的目标不受影响。
+  const queryClient = useQueryClient();
+  const aggregateTargetIds = useMemo(
+    () => getAggregateRouteTargetIds(provider.meta?.aggregateRoutes),
+    [provider.meta?.aggregateRoutes],
+  );
+  const [isRefreshingAggregateUsage, setIsRefreshingAggregateUsage] =
+    useState(false);
+  const handleRefreshAggregateUsage = async () => {
+    if (aggregateTargetIds.length === 0) return;
+    setIsRefreshingAggregateUsage(true);
+    try {
+      await Promise.all(
+        aggregateTargetIds.map((targetId) =>
+          queryClient.invalidateQueries({
+            queryKey: usageKeys.script(targetId, appId),
+          }),
+        ),
+      );
+    } finally {
+      setIsRefreshingAggregateUsage(false);
+    }
+  };
 
   const isTokenPlan =
     provider.meta?.usage_script?.templateType === "token_plan";
@@ -498,7 +528,30 @@ export function ProviderCard({
         <div className="flex items-center ml-auto min-w-0 gap-3">
           <div className="ml-auto">
             <div className="flex items-center gap-1">
-              {isCopilot ? (
+              {isAggregate ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleRefreshAggregateUsage();
+                  }}
+                  disabled={
+                    aggregateTargetIds.length === 0 ||
+                    isRefreshingAggregateUsage
+                  }
+                  className="p-1.5 rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"
+                  title={t("usage.refreshAggregateUsage", {
+                    defaultValue: "刷新各目标供应商的用量",
+                  })}
+                >
+                  <RefreshCw
+                    className={cn(
+                      "h-4 w-4",
+                      isRefreshingAggregateUsage && "animate-spin",
+                    )}
+                  />
+                </button>
+              ) : isCopilot ? (
                 <CopilotQuotaFooter
                   meta={provider.meta}
                   inline={true}

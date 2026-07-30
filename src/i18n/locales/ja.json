@@ -1584,6 +1584,7 @@
     "deleteConfirmDesc": "このモデル料金を削除しますか？この操作は元に戻せません。",
     "queryFailed": "照会に失敗しました",
     "refreshUsage": "利用状況を更新",
+    "refreshAggregateUsage": "振り分け先プロバイダーの利用状況を更新",
     "planUsage": "プラン利用状況",
     "invalid": "期限切れ",
     "total": "合計:",

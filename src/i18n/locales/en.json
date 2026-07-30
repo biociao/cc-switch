@@ -1584,6 +1584,7 @@
     "deleteConfirmDesc": "Are you sure you want to delete this model pricing? This action cannot be undone.",
     "queryFailed": "Query failed",
     "refreshUsage": "Refresh usage",
+    "refreshAggregateUsage": "Refresh usage of routed providers",
     "planUsage": "Plan usage",
     "invalid": "Expired",
     "total": "Total:",

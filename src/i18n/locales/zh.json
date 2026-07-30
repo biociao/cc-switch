@@ -1584,6 +1584,7 @@
     "deleteConfirmDesc": "确定要删除此模型定价配置吗？此操作无法撤销。",
     "queryFailed": "查询失败",
     "refreshUsage": "刷新用量",
+    "refreshAggregateUsage": "刷新各目标供应商的用量",
     "planUsage": "套餐用量",
     "invalid": "已失效",
     "total": "总：",

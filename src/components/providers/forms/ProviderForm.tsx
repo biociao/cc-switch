@@ -2086,6 +2086,7 @@ function ProviderFormFull({
 
           <BasicFormFields
             form={form}
+            showWebsiteUrl={!aggregateEnabled}
             beforeNameSlot={
               appId === "opencode" && !isAnyOmoCategory ? (
                 <div className="space-y-2">

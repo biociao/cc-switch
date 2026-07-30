@@ -30,6 +30,21 @@ export function isAggregateProvider(provider: Pick<Provider, "meta">): boolean {
   return hasAggregateRoutes(provider.meta?.aggregateRoutes);
 }
 
+/** 路由表实际引用的目标供应商 ID（去重，忽略未填 providerId 的档位） */
+export function getAggregateRouteTargetIds(
+  routes?: AggregateRoutes | null,
+): string[] {
+  if (!routes) return [];
+  const ids: string[] = [];
+  for (const tier of AGGREGATE_ROUTE_TIERS) {
+    const providerId = routes[tier]?.providerId?.trim();
+    if (providerId && !ids.includes(providerId)) {
+      ids.push(providerId);
+    }
+  }
+  return ids;
+}
+
 /**
  * 可作为聚合路由目标的供应商列表：
  * 排除聚合供应商自身（不允许嵌套）与当前正在编辑的供应商（不允许自指）。
