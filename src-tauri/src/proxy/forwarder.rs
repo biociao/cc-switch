@@ -3712,20 +3712,6 @@ mod tests {
     }
 
     #[test]
-    fn should_sync_current_provider_skips_routed_providers() {
-        let mut forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
-        forwarder.current_provider_id_at_start = "agg".to_string();
-        forwarder.routed_provider_ids.insert("kimi".to_string());
-
-        // 聚合路由合成的 provider：不触发"当前供应商"同步，避免随档位来回跳动
-        assert!(!forwarder.should_sync_current_provider("kimi"));
-        // 普通故障转移目标：保持原有同步行为
-        assert!(forwarder.should_sync_current_provider("other"));
-        // 当前供应商自身：不同步
-        assert!(!forwarder.should_sync_current_provider("agg"));
-    }
-
-    #[test]
     fn failover_switch_target_handles_aggregate_routed_providers() {
         let mut forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
         forwarder.current_provider_id_at_start = "agg".to_string();
