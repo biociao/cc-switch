@@ -3277,25 +3277,6 @@ mod tests {
         assert!(body.get("output_config").is_none());
     }
 
-    #[test]
-    fn test_normalize_messages_pipeline_rewrites_auto_for_deepseek() {
-        let mut body = json!({
-            "model": "deepseek-v4-pro",
-            "thinking": { "type": "auto" },
-            "max_tokens": 100000,
-            "messages": [{ "role": "user", "content": "hello" }]
-        });
-
-        let changed = normalize_anthropic_messages_for_provider(
-            &mut body,
-            &deepseek_official_provider(),
-            "anthropic",
-        );
-
-        assert!(changed);
-        assert_eq!(body["thinking"], json!({ "type": "adaptive" }));
-    }
-
     fn kimi_for_coding_provider() -> Provider {
         create_provider(json!({
             "env": {
@@ -3779,5 +3760,24 @@ mod tests {
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1]["content"][0]["tool_use_id"], "repl:112");
+    }
+
+    #[test]
+    fn test_normalize_messages_pipeline_rewrites_auto_for_deepseek() {
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "thinking": { "type": "auto" },
+            "max_tokens": 100000,
+            "messages": [{ "role": "user", "content": "hello" }]
+        });
+
+        let changed = normalize_anthropic_messages_for_provider(
+            &mut body,
+            &deepseek_official_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        assert_eq!(body["thinking"], json!({ "type": "adaptive" }));
     }
 }

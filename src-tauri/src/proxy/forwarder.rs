@@ -3691,6 +3691,27 @@ mod tests {
     }
 
     #[test]
+    fn strip_thinking_beta_headers_keeps_non_thinking_betas() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static(
+                "claude-code-20250219, interleaved-thinking-2025-05-14, context-1m-2025-08-07",
+            ),
+        );
+
+        let removed = strip_thinking_beta_headers(&mut headers);
+
+        assert_eq!(removed, 1);
+        assert_eq!(
+            headers
+                .get("anthropic-beta")
+                .and_then(|value| value.to_str().ok()),
+            Some("claude-code-20250219,context-1m-2025-08-07")
+        );
+    }
+
+    #[test]
     fn failover_switch_target_handles_aggregate_routed_providers() {
         let mut forwarder = test_forwarder(Duration::from_secs(0), Duration::from_secs(0));
         forwarder.current_provider_id_at_start = "agg".to_string();
@@ -3729,27 +3750,6 @@ mod tests {
         assert_eq!(
             forwarder.failover_switch_target(&kimi),
             Some(("agg".to_string(), "Agg".to_string()))
-        );
-    }
-
-    #[test]
-    fn strip_thinking_beta_headers_keeps_non_thinking_betas() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "anthropic-beta",
-            HeaderValue::from_static(
-                "claude-code-20250219, interleaved-thinking-2025-05-14, context-1m-2025-08-07",
-            ),
-        );
-
-        let removed = strip_thinking_beta_headers(&mut headers);
-
-        assert_eq!(removed, 1);
-        assert_eq!(
-            headers
-                .get("anthropic-beta")
-                .and_then(|value| value.to_str().ok()),
-            Some("claude-code-20250219,context-1m-2025-08-07")
         );
     }
 

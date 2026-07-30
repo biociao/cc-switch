@@ -1655,19 +1655,19 @@ function ProviderFormFull({
               authProvider: "github_copilot",
               accountId: selectedGitHubAccountId ?? undefined,
             }
-          : !aggregateEnabled && isCodexOauthProvider
+          : !aggregateEnabled && isXaiOauthProvider
             ? {
                 source: "managed_account",
-                authProvider: "codex_oauth",
-                accountId: selectedCodexAccountId ?? undefined,
+                authProvider: "xai_oauth",
+                accountId: selectedXaiAccountId ?? undefined,
               }
-            : !aggregateEnabled && isXaiOauthProvider
+            : !aggregateEnabled && isCodexOauthProvider
               ? {
                   source: "managed_account",
-                  authProvider: "xai_oauth",
-                  accountId: selectedXaiAccountId ?? undefined,
-                }
-              : undefined,
+                  authProvider: "codex_oauth",
+                  accountId: selectedCodexAccountId ?? undefined,
+              }
+            : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         !aggregateEnabled && isCopilotProvider && selectedGitHubAccountId
@@ -1746,8 +1746,8 @@ function ProviderFormFull({
       isFullUrl:
         supportsFullUrl &&
         category !== "official" &&
-        !aggregateEnabled &&
         !isXaiOauthProvider &&
+        !aggregateEnabled &&
         localIsFullUrl
           ? true
           : undefined,

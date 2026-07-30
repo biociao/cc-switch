@@ -276,9 +276,9 @@ jobs:
           # MSI 打包要求版本号（含 +元数据）纯数字；应用版本是 3.18.0+ciao.1，
           # 打包时用 --config 剥离元数据，不影响应用内显示与更新器语义
           if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') {
-            pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi --config '{"version":"3.18.0"}'
+            pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi --config '{"version":"3.19.0"}'
           } else {
-            pnpm tauri build --config '{"version":"3.18.0"}'
+            pnpm tauri build --config '{"version":"3.19.0"}'
           }
 
       - name: Build Tauri App (Linux)
