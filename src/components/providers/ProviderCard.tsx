@@ -29,10 +29,11 @@ import {
   providerNeedsRouting,
 } from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
-import { useUsageQuery } from "@/lib/query/queries";
+import { useProvidersQuery, useUsageQuery } from "@/lib/query/queries";
 import { usageKeys } from "@/lib/query/usage";
 import { resolveProviderIcon } from "@/utils/providerIcon";
 import {
+  AGGREGATE_ROUTE_TIERS,
   getAggregateRouteTargetIds,
   isAggregateProvider,
 } from "@/utils/aggregateRoutes";
@@ -262,20 +263,32 @@ export function ProviderCard({
   // 聚合供应商自身没有用量脚本；提供一键刷新，让路由到的各目标供应商同时刷新用量。
   // invalidateQueries 只重取已启用且已挂载的用量查询，未配置用量的目标不受影响。
   const queryClient = useQueryClient();
-  const aggregateTargetIds = useMemo(
-    () => getAggregateRouteTargetIds(provider.meta?.aggregateRoutes),
-    [provider.meta?.aggregateRoutes],
-  );
+  const { data: providersData } = useProvidersQuery(appId);
+  // 聚合卡片标题下方不再显示官网地址，改以标签形式展示路由到的目标供应商名称。
+  const aggregateTargets = useMemo(() => {
+    const routes = provider.meta?.aggregateRoutes;
+    if (!isAggregate || !routes) return [];
+    const providers = providersData?.providers ?? {};
+    return getAggregateRouteTargetIds(routes).map((id) => ({
+      id,
+      name: providers[id]?.name ?? id,
+      detail: AGGREGATE_ROUTE_TIERS.filter(
+        (tier) => routes[tier]?.providerId === id,
+      )
+        .map((tier) => `${tier}: ${routes[tier]?.model ?? ""}`)
+        .join("\n"),
+    }));
+  }, [isAggregate, provider.meta?.aggregateRoutes, providersData]);
   const [isRefreshingAggregateUsage, setIsRefreshingAggregateUsage] =
     useState(false);
   const handleRefreshAggregateUsage = async () => {
-    if (aggregateTargetIds.length === 0) return;
+    if (aggregateTargets.length === 0) return;
     setIsRefreshingAggregateUsage(true);
     try {
       await Promise.all(
-        aggregateTargetIds.map((targetId) =>
+        aggregateTargets.map((target) =>
           queryClient.invalidateQueries({
-            queryKey: usageKeys.script(targetId, appId),
+            queryKey: usageKeys.script(target.id, appId),
           }),
         ),
       );
@@ -506,21 +519,37 @@ export function ProviderCard({
               )}
             </div>
 
-            {displayUrl && (
-              <button
-                type="button"
-                onClick={handleOpenWebsite}
-                className={cn(
-                  "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
-                  isClickableUrl
-                    ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
-                    : "text-muted-foreground cursor-default",
-                )}
-                title={displayUrl}
-                disabled={!isClickableUrl}
-              >
-                <span className="min-w-0 truncate">{displayUrl}</span>
-              </button>
+            {isAggregate ? (
+              aggregateTargets.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  {aggregateTargets.map((target) => (
+                    <span
+                      key={target.id}
+                      title={target.detail || undefined}
+                      className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                    >
+                      {target.name}
+                    </span>
+                  ))}
+                </div>
+              )
+            ) : (
+              displayUrl && (
+                <button
+                  type="button"
+                  onClick={handleOpenWebsite}
+                  className={cn(
+                    "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
+                    isClickableUrl
+                      ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
+                      : "text-muted-foreground cursor-default",
+                  )}
+                  title={displayUrl}
+                  disabled={!isClickableUrl}
+                >
+                  <span className="min-w-0 truncate">{displayUrl}</span>
+                </button>
+              )
             )}
           </div>
         </div>
@@ -536,7 +565,7 @@ export function ProviderCard({
                     void handleRefreshAggregateUsage();
                   }}
                   disabled={
-                    aggregateTargetIds.length === 0 ||
+                    aggregateTargets.length === 0 ||
                     isRefreshingAggregateUsage
                   }
                   className="p-1.5 rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"
