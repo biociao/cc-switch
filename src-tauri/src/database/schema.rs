@@ -124,7 +124,7 @@ impl Database {
 
         // 8. Proxy Config 表（三行结构，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
-            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','claude-science','codex','gemini','grokbuild')),
+            app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
             listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -153,10 +153,6 @@ impl Database {
                 [],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
-            // 注意：这里不要 seed 'claude-science' 行。全新数据库在 create_tables
-            // 之后还要跑 v0→v17 的完整迁移链，历史迁移（如 v13→v14）重建
-            // proxy_config 时 CHECK 不含 'claude-science'，提前 seed 会导致
-            // 拷贝违反 CHECK。该行由 migrate_v16_to_v17 负责补种。
             conn.execute(
                 "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
@@ -422,6 +418,21 @@ impl Database {
 
         let mut version = Self::get_user_version(conn)?;
 
+        // ciao 过渡版定向自愈：claude-science 曾随 fork 的 v17 迁移放宽 proxy_config
+        // 的 CHECK 并补种一行。现 claude-science 的代理配置改存 settings 表（schema
+        // 回到与官方一致的 v16）。检测到"我们的 v17"（proxy_config 表定义含
+        // claude-science 签名）时，把该行状态搬进 settings 表、删除该行并降回 16，
+        // 保证用户库在官方版与 ciao 版之间切换双向兼容。遇到内容不同的其他 v17
+        // （如上游未来的迁移）签名不匹配，仍走下方"版本过新"报错。
+        if version == 17 && Self::proxy_config_has_claude_science_signature(conn)? {
+            log::info!(
+                "检测到 ciao v17 数据库（claude-science proxy_config），迁移其状态到 settings 表并降回 v16"
+            );
+            Self::heal_claude_science_v17(conn)?;
+            Self::set_user_version(conn, 16)?;
+            version = Self::get_user_version(conn)?;
+        }
+
         if version > SCHEMA_VERSION {
             conn.execute("ROLLBACK TO schema_migration;", []).ok();
             conn.execute("RELEASE schema_migration;", []).ok();
@@ -514,11 +525,6 @@ impl Database {
                         log::info!("迁移数据库从 v15 到 v16（重建 Codex 会话用量）");
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
-                    }
-                    16 => {
-                        log::info!("迁移数据库从 v16 到 v17（添加 Claude Science 代理配置）");
-                        Self::migrate_v16_to_v17(conn)?;
-                        Self::set_user_version(conn, 17)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1532,109 +1538,63 @@ impl Database {
         crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
-    /// v16 -> v17: 扩展 proxy_config 的 app_type CHECK 以容纳 'claude-science'
-    /// 并补种其配置行（Messages 协议，默认值与 claude 相同）。
-    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
-        if !Self::table_exists(conn, "proxy_config")? {
-            return Ok(());
-        }
-
-        conn.execute("DROP TABLE IF EXISTS proxy_config_v17", [])
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        conn.execute(
-            "CREATE TABLE proxy_config_v17 (
-                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','claude-science','codex','gemini','grokbuild')),
-                proxy_enabled INTEGER NOT NULL DEFAULT 0,
-                listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-                listen_port INTEGER NOT NULL DEFAULT 15721,
-                enable_logging INTEGER NOT NULL DEFAULT 1,
-                enabled INTEGER NOT NULL DEFAULT 0,
-                auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
-                max_retries INTEGER NOT NULL DEFAULT 3,
-                streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
-                streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
-                non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
-                circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
-                circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
-                circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
-                circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
-                circuit_min_requests INTEGER NOT NULL DEFAULT 10,
-                default_cost_multiplier TEXT NOT NULL DEFAULT '1',
-                pricing_model_source TEXT NOT NULL DEFAULT 'response',
-                live_takeover_active INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let copied_columns = [
-            ("app_type", "'claude'"),
-            ("proxy_enabled", "0"),
-            ("listen_address", "'127.0.0.1'"),
-            ("listen_port", "15721"),
-            ("enable_logging", "1"),
-            ("enabled", "0"),
-            ("auto_failover_enabled", "0"),
-            ("max_retries", "3"),
-            ("streaming_first_byte_timeout", "60"),
-            ("streaming_idle_timeout", "120"),
-            ("non_streaming_timeout", "600"),
-            ("circuit_failure_threshold", "4"),
-            ("circuit_success_threshold", "2"),
-            ("circuit_timeout_seconds", "60"),
-            ("circuit_error_rate_threshold", "0.6"),
-            ("circuit_min_requests", "10"),
-            ("default_cost_multiplier", "'1'"),
-            ("pricing_model_source", "'response'"),
-            ("live_takeover_active", "0"),
-            ("created_at", "datetime('now')"),
-            ("updated_at", "datetime('now')"),
-        ]
-        .into_iter()
-        .map(|(column, fallback)| {
-            Self::has_column(conn, "proxy_config", column).map(|exists| {
-                if exists {
-                    format!("\"{column}\"")
-                } else {
-                    fallback.into()
-                }
-            })
-        })
-        .collect::<Result<Vec<_>, AppError>>()?
-        .join(", ");
-
-        let copy_sql = format!(
-            "INSERT INTO proxy_config_v17 (
-                app_type, proxy_enabled, listen_address, listen_port, enable_logging,
-                enabled, auto_failover_enabled, max_retries,
-                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
-                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
-                circuit_error_rate_threshold, circuit_min_requests,
-                default_cost_multiplier, pricing_model_source, live_takeover_active,
-                created_at, updated_at
+    /// proxy_config 表定义是否带有 fork v17 的 claude-science 签名（定向自愈用）。
+    pub(crate) fn proxy_config_has_claude_science_signature(
+        conn: &Connection,
+    ) -> Result<bool, AppError> {
+        let sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proxy_config'",
+                [],
+                |row| row.get(0),
             )
-            SELECT {copied_columns} FROM proxy_config"
-        );
-        conn.execute(&copy_sql, [])
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            .ok();
+        Ok(sql.is_some_and(|s| s.contains("claude-science")))
+    }
 
-        conn.execute("DROP TABLE proxy_config", [])
+    /// 把 fork v17 的 claude-science proxy_config 行状态搬进 settings 表（JSON），
+    /// 随后删除该行——避免残留的 enabled=1 行干扰 is_live_takeover_active 的统计。
+    fn heal_claude_science_v17(conn: &Connection) -> Result<(), AppError> {
+        let config = conn
+            .query_row(
+                "SELECT enabled, auto_failover_enabled, max_retries,
+                        streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
+                        circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
+                        circuit_error_rate_threshold, circuit_min_requests
+                 FROM proxy_config WHERE app_type = 'claude-science'",
+                [],
+                |row| {
+                    Ok(crate::proxy::types::AppProxyConfig {
+                        app_type: "claude-science".to_string(),
+                        enabled: row.get::<_, i32>(0)? != 0,
+                        auto_failover_enabled: row.get::<_, i32>(1)? != 0,
+                        max_retries: row.get::<_, i32>(2)? as u32,
+                        streaming_first_byte_timeout: row.get::<_, i32>(3)? as u32,
+                        streaming_idle_timeout: row.get::<_, i32>(4)? as u32,
+                        non_streaming_timeout: row.get::<_, i32>(5)? as u32,
+                        circuit_failure_threshold: row.get::<_, i32>(6)? as u32,
+                        circuit_success_threshold: row.get::<_, i32>(7)? as u32,
+                        circuit_timeout_seconds: row.get::<_, i32>(8)? as u32,
+                        circuit_error_rate_threshold: row.get(9)?,
+                        circuit_min_requests: row.get::<_, i32>(10)? as u32,
+                    })
+                },
+            )
+            .ok();
+
+        if let Some(config) = config {
+            let json = super::to_json_string(&config)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params![super::dao::proxy::CLAUDE_SCIENCE_PROXY_CONFIG_KEY, json],
+            )
             .map_err(|e| AppError::Database(e.to_string()))?;
-        conn.execute("ALTER TABLE proxy_config_v17 RENAME TO proxy_config", [])
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        // claude-science: Messages 协议，与 claude 相同的重试/超时默认值
+        }
         conn.execute(
-            "INSERT OR IGNORE INTO proxy_config (app_type, max_retries,
-                streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
-                circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
-                circuit_error_rate_threshold, circuit_min_requests)
-                VALUES ('claude-science', 6, 90, 180, 600, 8, 3, 90, 0.7, 15)",
+            "DELETE FROM proxy_config WHERE app_type = 'claude-science'",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
-
         Ok(())
     }
 
@@ -3210,34 +3170,74 @@ mod tests {
     }
 
     #[test]
-    fn migrate_v16_to_v17_adds_claude_science_proxy_row_and_preserves_values(
-    ) -> Result<(), AppError> {
+    fn ciao_v17_is_healed_back_to_v16_with_state_moved_to_settings() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         Database::create_tables_on_conn(&conn)?;
-        conn.execute("DELETE FROM proxy_config WHERE app_type = 'claude-science'", [])?;
+
+        // 模拟 fork v17：重建带 claude-science CHECK 的 proxy_config，并补种
+        // claude-science（接管开启、自定义重试次数）与 claude 两行
+        conn.execute("DROP TABLE proxy_config", [])?;
         conn.execute(
-            "UPDATE proxy_config SET enabled = 1, max_retries = 9 WHERE app_type = 'claude'",
+            "CREATE TABLE proxy_config (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','claude-science','codex','gemini','grokbuild')),
+                proxy_enabled INTEGER NOT NULL DEFAULT 0,
+                listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
+                listen_port INTEGER NOT NULL DEFAULT 15721,
+                enable_logging INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
+                streaming_idle_timeout INTEGER NOT NULL DEFAULT 120,
+                non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
+                circuit_failure_threshold INTEGER NOT NULL DEFAULT 4,
+                circuit_success_threshold INTEGER NOT NULL DEFAULT 2,
+                circuit_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+                circuit_error_rate_threshold REAL NOT NULL DEFAULT 0.6,
+                circuit_min_requests INTEGER NOT NULL DEFAULT 10,
+                default_cost_multiplier TEXT NOT NULL DEFAULT '1',
+                pricing_model_source TEXT NOT NULL DEFAULT 'response',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
             [],
         )?;
-        Database::set_user_version(&conn, 16)?;
+        conn.execute(
+            "INSERT INTO proxy_config (app_type, enabled, max_retries) VALUES ('claude-science', 1, 9)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO proxy_config (app_type, enabled, max_retries) VALUES ('claude', 1, 8)",
+            [],
+        )?;
+        Database::set_user_version(&conn, 17)?;
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
-        let science_row: (i64, i64, i64) = conn.query_row(
-            "SELECT COUNT(*), COALESCE(MAX(max_retries), -1), COALESCE(MAX(streaming_first_byte_timeout), -1)
-             FROM proxy_config WHERE app_type = 'claude-science'",
+        // 版本降回 16；claude-science 行被移除（残留 enabled=1 会干扰接管统计）；
+        // 其余行原样保留；状态以 JSON 搬进 settings 表
+        assert_eq!(Database::get_user_version(&conn)?, 16);
+        let science_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_config WHERE app_type = 'claude-science'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )?;
-        // claude-science 行被补种，且默认值与 claude 相同（6 次重试 / 90s 首字节超时）
-        assert_eq!(science_row, (1, 6, 90));
+        assert_eq!(science_rows, 0);
         let claude_values: (i64, i64) = conn.query_row(
             "SELECT enabled, max_retries FROM proxy_config WHERE app_type = 'claude'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        assert_eq!(claude_values, (1, 9));
+        assert_eq!(claude_values, (1, 8));
+        let json: String = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'proxy_config:claude-science'",
+            [],
+            |row| row.get(0),
+        )?;
+        let config: serde_json::Value =
+            serde_json::from_str(&json).expect("settings value should be valid JSON");
+        assert_eq!(config["enabled"], true);
+        assert_eq!(config["maxRetries"], 9);
 
         Ok(())
     }

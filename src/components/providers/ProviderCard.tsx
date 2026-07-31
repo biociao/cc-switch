@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
-import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
+import { GripVertical, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 import type {
   DraggableAttributes,
   DraggableSyntheticListeners,
@@ -28,9 +29,14 @@ import {
   providerNeedsRouting,
 } from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
-import { useUsageQuery } from "@/lib/query/queries";
+import { useProvidersQuery, useUsageQuery } from "@/lib/query/queries";
+import { usageKeys } from "@/lib/query/usage";
 import { resolveProviderIcon } from "@/utils/providerIcon";
-import { isAggregateProvider } from "@/utils/aggregateRoutes";
+import {
+  AGGREGATE_ROUTE_TIERS,
+  getAggregateRouteTargetIds,
+  isAggregateProvider,
+} from "@/utils/aggregateRoutes";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -254,6 +260,43 @@ export function ProviderCard({
     autoQueryInterval,
   });
 
+  // 聚合供应商自身没有用量脚本；提供一键刷新，让路由到的各目标供应商同时刷新用量。
+  // invalidateQueries 只重取已启用且已挂载的用量查询，未配置用量的目标不受影响。
+  const queryClient = useQueryClient();
+  const { data: providersData } = useProvidersQuery(appId);
+  // 聚合卡片标题下方不再显示官网地址，改以标签形式展示路由到的目标供应商名称。
+  const aggregateTargets = useMemo(() => {
+    const routes = provider.meta?.aggregateRoutes;
+    if (!isAggregate || !routes) return [];
+    const providers = providersData?.providers ?? {};
+    return getAggregateRouteTargetIds(routes).map((id) => ({
+      id,
+      name: providers[id]?.name ?? id,
+      detail: AGGREGATE_ROUTE_TIERS.filter(
+        (tier) => routes[tier]?.providerId === id,
+      )
+        .map((tier) => `${tier}: ${routes[tier]?.model ?? ""}`)
+        .join("\n"),
+    }));
+  }, [isAggregate, provider.meta?.aggregateRoutes, providersData]);
+  const [isRefreshingAggregateUsage, setIsRefreshingAggregateUsage] =
+    useState(false);
+  const handleRefreshAggregateUsage = async () => {
+    if (aggregateTargets.length === 0) return;
+    setIsRefreshingAggregateUsage(true);
+    try {
+      await Promise.all(
+        aggregateTargets.map((target) =>
+          queryClient.invalidateQueries({
+            queryKey: usageKeys.script(target.id, appId),
+          }),
+        ),
+      );
+    } finally {
+      setIsRefreshingAggregateUsage(false);
+    }
+  };
+
   const isTokenPlan =
     provider.meta?.usage_script?.templateType === "token_plan";
   const hasMultiplePlans =
@@ -476,29 +519,65 @@ export function ProviderCard({
               )}
             </div>
 
-            {displayUrl && (
-              <button
-                type="button"
-                onClick={handleOpenWebsite}
-                className={cn(
-                  "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
-                  isClickableUrl
-                    ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
-                    : "text-muted-foreground cursor-default",
+            {isAggregate
+              ? aggregateTargets.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    {aggregateTargets.map((target) => (
+                      <span
+                        key={target.id}
+                        title={target.detail || undefined}
+                        className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                      >
+                        {target.name}
+                      </span>
+                    ))}
+                  </div>
+                )
+              : displayUrl && (
+                  <button
+                    type="button"
+                    onClick={handleOpenWebsite}
+                    className={cn(
+                      "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
+                      isClickableUrl
+                        ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
+                        : "text-muted-foreground cursor-default",
+                    )}
+                    title={displayUrl}
+                    disabled={!isClickableUrl}
+                  >
+                    <span className="min-w-0 truncate">{displayUrl}</span>
+                  </button>
                 )}
-                title={displayUrl}
-                disabled={!isClickableUrl}
-              >
-                <span className="min-w-0 truncate">{displayUrl}</span>
-              </button>
-            )}
           </div>
         </div>
 
         <div className="flex items-center ml-auto min-w-0 gap-3">
           <div className="ml-auto">
             <div className="flex items-center gap-1">
-              {isCopilot ? (
+              {isAggregate ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleRefreshAggregateUsage();
+                  }}
+                  disabled={
+                    aggregateTargets.length === 0 || isRefreshingAggregateUsage
+                  }
+                  className="p-1.5 rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"
+                  title={t("usage.refreshAggregateUsage", {
+                    defaultValue: "刷新各目标供应商的用量",
+                  })}
+                >
+                  <RefreshCw
+                    className={cn(
+                      "h-4 w-4",
+                      isRefreshingAggregateUsage && "animate-spin",
+                    )}
+                  />
+                </button>
+              ) : isCopilot ? (
                 <CopilotQuotaFooter
                   meta={provider.meta}
                   inline={true}

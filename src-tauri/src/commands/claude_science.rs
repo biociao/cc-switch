@@ -354,20 +354,11 @@ fn proxy_launch_env(proxy_base_url: &str) -> [(&'static str, String); 3] {
     // to the claude-science provider namespace and failover queue (the CLI's
     // own config lives in an encrypted SQLite, so there is no live config
     // file for cc-switch to write).
-    let science_base_url = format!(
-        "{}/claude-science",
-        proxy_base_url.trim_end_matches('/')
-    );
+    let science_base_url = format!("{}/claude-science", proxy_base_url.trim_end_matches('/'));
     [
         ("ANTHROPIC_BASE_URL", science_base_url),
-        (
-            "ANTHROPIC_AUTH_TOKEN",
-            PROXY_TOKEN_PLACEHOLDER.to_string(),
-        ),
-        (
-            "ANTHROPIC_API_KEY",
-            PROXY_TOKEN_PLACEHOLDER.to_string(),
-        ),
+        ("ANTHROPIC_AUTH_TOKEN", PROXY_TOKEN_PLACEHOLDER.to_string()),
+        ("ANTHROPIC_API_KEY", PROXY_TOKEN_PLACEHOLDER.to_string()),
     ]
 }
 
@@ -1105,10 +1096,7 @@ mod tests {
         );
         assert_eq!(
             env[1],
-            (
-                "ANTHROPIC_AUTH_TOKEN",
-                PROXY_TOKEN_PLACEHOLDER.to_string()
-            )
+            ("ANTHROPIC_AUTH_TOKEN", PROXY_TOKEN_PLACEHOLDER.to_string())
         );
         assert_eq!(
             env[2],

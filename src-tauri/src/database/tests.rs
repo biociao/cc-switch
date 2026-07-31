@@ -215,6 +215,59 @@ fn schema_migration_rejects_future_version() {
     );
 }
 
+/// ciao 过渡版的 v17（proxy_config DDL 含 claude-science）不应被启动预检判为
+/// "版本过新"——它会在正常初始化的 schema 迁移中被自愈降回 16。
+#[test]
+fn ciao_v17_passes_too_new_precheck_for_self_heal() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("cc-switch.db");
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        Database::create_tables_on_conn(&conn).expect("create tables");
+        conn.execute("ALTER TABLE proxy_config RENAME TO proxy_config_v16", [])
+            .expect("rename proxy_config");
+        conn.execute(
+            "CREATE TABLE proxy_config (
+                app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','claude-science','codex','gemini','grokbuild')),
+                enabled INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )
+        .expect("create v17-shaped proxy_config");
+        conn.execute(
+            "INSERT INTO proxy_config (app_type, enabled) SELECT app_type, enabled FROM proxy_config_v16",
+            [],
+        )
+        .expect("copy rows");
+        conn.execute("DROP TABLE proxy_config_v16", [])
+            .expect("drop old table");
+        Database::set_user_version(&conn, 17).expect("set v17");
+    }
+
+    assert_eq!(
+        Database::stored_user_version_exceeds_supported(&db_path).expect("precheck"),
+        None,
+        "ciao v17 should pass the precheck and proceed to self-heal"
+    );
+}
+
+/// 签名不匹配的更新版本（如上游未来的 v17）仍按"版本过新"处理。
+#[test]
+fn foreign_future_version_fails_too_new_precheck() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("cc-switch.db");
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        Database::create_tables_on_conn(&conn).expect("create tables");
+        Database::set_user_version(&conn, SCHEMA_VERSION + 1).expect("set future version");
+    }
+
+    assert_eq!(
+        Database::stored_user_version_exceeds_supported(&db_path).expect("precheck"),
+        Some(SCHEMA_VERSION + 1),
+    );
+}
+
 #[test]
 fn schema_migration_adds_missing_columns_for_providers() {
     let conn = Connection::open_in_memory().expect("open memory db");
@@ -685,12 +738,12 @@ fn migration_from_v3_8_schema_v1_to_current_schema_v3() {
         "skills migration snapshot should preserve legacy app mapping"
     );
 
-    // v3.9+ 新增：proxy_config 各应用 seed 必须存在（否则 UI 会查不到默认值），
-    // v17 起含 claude-science 共 5 行
+    // v3.9+ 新增：proxy_config 各应用 seed 必须存在（否则 UI 会查不到默认值）。
+    // claude-science 不占行——其代理配置存 settings 表，schema 保持与官方一致的 v16。
     let proxy_rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM proxy_config", [], |r| r.get(0))
         .expect("count proxy_config rows");
-    assert_eq!(proxy_rows, 5);
+    assert_eq!(proxy_rows, 4);
 
     // model_pricing 应具备默认数据（迁移时会 seed）
     let pricing_rows: i64 = conn

@@ -252,8 +252,7 @@ impl RequestForwarder {
     /// 避免 UI/托盘随档位抖动；但故障转移首次命中聚合时，同步到来源聚合供应商，
     /// 否则请求成功而 UI/持久化的当前供应商仍停留在已故障的 provider 上。
     fn failover_switch_target(&self, provider: &Provider) -> Option<(String, String)> {
-        if let Some((aggregate_id, aggregate_name)) =
-            self.routed_provider_sources.get(&provider.id)
+        if let Some((aggregate_id, aggregate_name)) = self.routed_provider_sources.get(&provider.id)
         {
             if self.current_provider_id_at_start != *aggregate_id {
                 return Some((aggregate_id.clone(), aggregate_name.clone()));
@@ -637,8 +636,7 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let switch_target =
-                                            self.failover_switch_target(provider);
+                                        let switch_target = self.failover_switch_target(provider);
                                         if let Some((pid, pname)) = switch_target {
                                             status.failover_count += 1;
                                             let fm = self.failover_manager.clone();
@@ -954,8 +952,7 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let switch_target =
-                                            self.failover_switch_target(provider);
+                                        let switch_target = self.failover_switch_target(provider);
                                         if let Some((pid, pname)) = switch_target {
                                             status.failover_count += 1;
                                             let fm = self.failover_manager.clone();
@@ -1203,6 +1200,15 @@ impl RequestForwarder {
         // Route requests to the provider's real upstream model before applying
         // the optional Responses -> Chat/Anthropic bridge.
         if matches!(app_type, AppType::GrokBuild) {
+            super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+        }
+
+        // Codex 聚合路由：命中路由的 provider（由聚合路由合成）需要把请求模型
+        // 改写为路由的上游模型。原生 Responses 透传路径此前不改写 model，
+        // 这里补上；chat/anthropic 转换路径的后续调用幂等无害。
+        if matches!(app_type, AppType::Codex)
+            && self.routed_provider_sources.contains_key(&provider.id)
+        {
             super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
         }
 

@@ -27,11 +27,14 @@ interface BasicFormFieldsProps {
   form: UseFormReturn<ProviderFormData>;
   /** Slot to render content between icon and name fields */
   beforeNameSlot?: ReactNode;
+  /** 聚合供应商没有官网，隐藏官网链接字段（默认显示） */
+  showWebsiteUrl?: boolean;
 }
 
 export function BasicFormFields({
   form,
   beforeNameSlot,
+  showWebsiteUrl = true,
 }: BasicFormFieldsProps) {
   const { t } = useTranslation();
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
@@ -155,22 +158,24 @@ export function BasicFormFields({
         />
       </div>
 
-      <FormField
-        control={form.control}
-        name="websiteUrl"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t("provider.websiteUrl")}</FormLabel>
-            <FormControl>
-              <Input
-                {...field}
-                placeholder={t("providerForm.websiteUrlPlaceholder")}
-              />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      {showWebsiteUrl && (
+        <FormField
+          control={form.control}
+          name="websiteUrl"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t("provider.websiteUrl")}</FormLabel>
+              <FormControl>
+                <Input
+                  {...field}
+                  placeholder={t("providerForm.websiteUrlPlaceholder")}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      )}
     </>
   );
 }

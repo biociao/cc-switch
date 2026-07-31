@@ -53,7 +53,7 @@ use std::sync::Mutex;
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 17;
+pub(crate) const SCHEMA_VERSION: i32 = 16;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -179,7 +179,16 @@ impl Database {
         }
         let conn = Connection::open(db_path).map_err(|e| AppError::Database(e.to_string()))?;
         let version = Self::get_user_version(&conn)?;
-        Ok((version > SCHEMA_VERSION).then_some(version))
+        if version > SCHEMA_VERSION {
+            // ciao 过渡版的 v17（proxy_config 带 claude-science 签名）会在正常初始化的
+            // schema 迁移中被定向自愈降回 16，不属于"版本过新"，放行让初始化继续。
+            // 签名不匹配的其它更新版本（如上游未来的迁移）仍按过新处理。
+            if version == 17 && Self::proxy_config_has_claude_science_signature(&conn)? {
+                return Ok(None);
+            }
+            return Ok(Some(version));
+        }
+        Ok(None)
     }
 
     /// 创建内存数据库（用于测试）

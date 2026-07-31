@@ -162,7 +162,9 @@ export function useProviderActions(
   const switchProvider = useCallback(
     async (provider: Provider) => {
       if (
-        (activeApp === "claude" || activeApp === "claude-science") &&
+        (activeApp === "claude" ||
+          activeApp === "claude-science" ||
+          activeApp === "codex") &&
         isAggregateProvider(provider) &&
         !isProxyTakeover
       ) {
