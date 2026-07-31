@@ -135,9 +135,11 @@ import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
 import {
   AGGREGATE_SETTINGS_CONFIG,
+  customRoutesToRows,
   hasAggregateRoutes,
   normalizeAggregateRoutes,
   validateAggregateRoutes,
+  type AggregateCustomRouteRow,
 } from "@/utils/aggregateRoutes";
 
 type PresetEntry = {
@@ -294,13 +296,17 @@ function ProviderFormFull({
 
   const { t } = useTranslation();
   const isEditMode = Boolean(initialData);
+  const supportsAggregate = appId === "claude" || appId === "codex";
   const [aggregateEnabled, setAggregateEnabled] = useState(
-    appId === "claude" &&
-      hasAggregateRoutes(initialData?.meta?.aggregateRoutes),
+    supportsAggregate && hasAggregateRoutes(initialData?.meta?.aggregateRoutes),
   );
   const [aggregateRoutes, setAggregateRoutes] = useState<AggregateRoutes>(
     initialData?.meta?.aggregateRoutes ?? {},
   );
+  // Codex 聚合路由的有序行态（Record 无法保留重复 key，提交校验依赖行态）
+  const [aggregateCustomRows, setAggregateCustomRows] = useState<
+    AggregateCustomRouteRow[]
+  >(() => customRoutesToRows(initialData?.meta?.aggregateRoutes?.custom));
   const queryClient = useQueryClient();
   const { data: settingsData } = useSettingsQuery();
   const showCommonConfigNotice =
@@ -376,19 +382,20 @@ function ProviderFormFull({
     setSelectedPresetId(initialData ? null : "custom");
     setActivePreset(null);
     setAggregateEnabled(
-      appId === "claude" &&
+      supportsAggregate &&
         hasAggregateRoutes(initialData?.meta?.aggregateRoutes),
     );
     setAggregateRoutes(initialData?.meta?.aggregateRoutes ?? {});
+    setAggregateCustomRows(
+      customRoutesToRows(initialData?.meta?.aggregateRoutes?.custom),
+    );
 
     if (!initialData) {
       setDraftCustomEndpoints([]);
     }
     setEndpointAutoSelect(initialData?.meta?.endpointAutoSelect ?? true);
     setWebSearchCompat(initialData?.meta?.webSearchCompat ?? "auto");
-    setWebSearchResultFilter(
-      initialData?.meta?.webSearchResultFilter ?? false,
-    );
+    setWebSearchResultFilter(initialData?.meta?.webSearchResultFilter ?? false);
     setLocalIsFullUrl(
       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
     );
@@ -1073,19 +1080,28 @@ function ProviderFormFull({
     !aggregateEnabled;
 
   const handleSubmit = async (values: ProviderFormData) => {
-    if (appId === "claude" && aggregateEnabled) {
-      const validation = validateAggregateRoutes(aggregateRoutes);
+    if (supportsAggregate && aggregateEnabled) {
+      const validation = validateAggregateRoutes(
+        aggregateRoutes,
+        appId as "claude" | "codex",
+        aggregateCustomRows,
+      );
       if (!validation.ok) {
         toast.error(
           validation.reason === "empty"
             ? t("providerForm.aggregate.empty", {
                 defaultValue: "Configure at least one aggregate route.",
               })
-            : t("providerForm.aggregate.incomplete", {
-                tier: validation.tier,
-                defaultValue:
-                  "The {{tier}} route requires both a provider and a model.",
-              }),
+            : validation.reason === "duplicate"
+              ? t("providerForm.aggregate.duplicateKey", {
+                  key: validation.key,
+                  defaultValue: "Duplicate model name: {{key}}",
+                })
+              : t("providerForm.aggregate.incomplete", {
+                  tier: validation.tier,
+                  defaultValue:
+                    "The {{tier}} route requires both a provider and a model.",
+                }),
         );
         return;
       }
@@ -1369,7 +1385,7 @@ function ProviderFormFull({
             }),
           );
         }
-      } else if (appId === "codex") {
+      } else if (appId === "codex" && !aggregateEnabled) {
         // 托管 OAuth 预设（xAI）：端点由 adapter 硬定向、token 由代理注入，
         // 两项都不需要用户填写
         if (!isXaiOauthProvider && !codexBaseUrl.trim()) {
@@ -1443,7 +1459,7 @@ function ProviderFormFull({
 
     let settingsConfig: string;
 
-    if (appId === "claude" && aggregateEnabled) {
+    if (supportsAggregate && aggregateEnabled) {
       settingsConfig = JSON.stringify(AGGREGATE_SETTINGS_CONFIG);
     } else if (appId === "codex") {
       try {
@@ -1552,7 +1568,7 @@ function ProviderFormFull({
       payload.presetCategory = category;
     }
 
-    if (appId === "claude" && aggregateEnabled) {
+    if (supportsAggregate && aggregateEnabled) {
       payload.presetCategory = "custom";
     }
 
@@ -1631,7 +1647,7 @@ function ProviderFormFull({
       commonConfigEnabled:
         appId === "claude" && !aggregateEnabled
           ? useCommonConfig
-          : appId === "codex"
+          : appId === "codex" && !aggregateEnabled
             ? useCodexCommonConfigFlag
             : appId === "gemini"
               ? useGeminiCommonConfigFlag
@@ -1666,8 +1682,8 @@ function ProviderFormFull({
                   source: "managed_account",
                   authProvider: "codex_oauth",
                   accountId: selectedCodexAccountId ?? undefined,
-              }
-            : undefined,
+                }
+              : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         !aggregateEnabled && isCopilotProvider && selectedGitHubAccountId
@@ -1678,12 +1694,14 @@ function ProviderFormFull({
       codexChatReasoning:
         appId === "codex" &&
         category !== "official" &&
+        !aggregateEnabled &&
         localCodexApiFormat === "openai_chat"
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
       promptCacheRouting:
         appId === "codex" &&
         category !== "official" &&
+        !aggregateEnabled &&
         localCodexApiFormat === "openai_chat" &&
         promptCacheRouting !== "auto"
           ? promptCacheRouting
@@ -1709,7 +1727,7 @@ function ProviderFormFull({
           ? isXaiOauthProvider
             ? "openai_responses"
             : localApiFormat
-          : appId === "codex" && category !== "official"
+          : appId === "codex" && category !== "official" && !aggregateEnabled
             ? isXaiOauthProvider
               ? "openai_responses"
               : localCodexApiFormat
@@ -1722,6 +1740,7 @@ function ProviderFormFull({
           ? localApiKeyField
           : appId === "codex" &&
               category !== "official" &&
+              !aggregateEnabled &&
               localCodexApiFormat === "anthropic" &&
               localCodexAnthropicAuthField !== "ANTHROPIC_AUTH_TOKEN"
             ? localCodexAnthropicAuthField
@@ -1730,6 +1749,7 @@ function ProviderFormFull({
       impersonateClaudeCode:
         appId === "codex" &&
         category !== "official" &&
+        !aggregateEnabled &&
         localCodexApiFormat === "anthropic" &&
         localCodexImpersonateClaudeCode
           ? true
@@ -1738,6 +1758,7 @@ function ProviderFormFull({
       maxOutputTokens:
         appId === "codex" &&
         category !== "official" &&
+        !aggregateEnabled &&
         localCodexApiFormat === "anthropic" &&
         localCodexMaxOutputTokens.trim() !== "" &&
         Number(localCodexMaxOutputTokens) > 0
@@ -1752,8 +1773,11 @@ function ProviderFormFull({
           ? true
           : undefined,
       aggregateRoutes:
-        appId === "claude" && aggregateEnabled
-          ? normalizeAggregateRoutes(aggregateRoutes)
+        supportsAggregate && aggregateEnabled
+          ? normalizeAggregateRoutes(
+              aggregateRoutes,
+              appId as "claude" | "codex",
+            )
           : undefined,
     };
 
@@ -2061,14 +2085,17 @@ function ProviderFormFull({
           onSubmit={form.handleSubmit(handleSubmit)}
           className="space-y-6 glass rounded-xl p-6 border border-white/10"
         >
-          {appId === "claude" && (
+          {supportsAggregate && (
             <AggregateProviderFields
+              appId={appId as "claude" | "codex"}
               enabled={aggregateEnabled}
               onEnabledChange={setAggregateEnabled}
               routes={aggregateRoutes}
               onRoutesChange={setAggregateRoutes}
               providers={availableProviders}
               currentProviderId={providerId}
+              customRows={aggregateCustomRows}
+              onCustomRowsChange={setAggregateCustomRows}
             />
           )}
 
@@ -2389,7 +2416,7 @@ function ProviderFormFull({
             />
           )}
 
-          {appId === "codex" && (
+          {appId === "codex" && !aggregateEnabled && (
             <CodexFormFields
               providerId={providerId}
               isXaiOauthPreset={
@@ -2562,7 +2589,7 @@ function ProviderFormFull({
           )}
 
           {/* 配置编辑器：Codex、Claude、Gemini 分别使用不同的编辑器 */}
-          {appId === "claude" && aggregateEnabled ? null : appId === "codex" ? (
+          {supportsAggregate && aggregateEnabled ? null : appId === "codex" ? (
             <>
               <CodexConfigEditor
                 authValue={codexAuth}

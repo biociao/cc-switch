@@ -165,9 +165,7 @@ pub(crate) fn apply_claude_web_search_policy(settings: &mut Value, provider: &Pr
     let Some(obj) = settings.as_object_mut() else {
         return;
     };
-    let permissions = obj
-        .entry("permissions")
-        .or_insert_with(|| json!({}));
+    let permissions = obj.entry("permissions").or_insert_with(|| json!({}));
     let Some(permissions) = permissions.as_object_mut() else {
         return;
     };
@@ -242,12 +240,7 @@ mod tests {
     use crate::provider::ProviderMeta;
 
     fn claude_provider(settings: Value, web_search_compat: Option<&str>) -> Provider {
-        let mut provider = Provider::with_id(
-            "p1".into(),
-            "Claude A".into(),
-            settings,
-            None,
-        );
+        let mut provider = Provider::with_id("p1".into(), "Claude A".into(), settings, None);
         provider.meta = web_search_compat.map(|compat| ProviderMeta {
             web_search_compat: Some(compat.to_string()),
             ..ProviderMeta::default()
@@ -392,7 +385,9 @@ mod tests {
     fn empty_search_results_header_matches_only_blank_results() {
         // 空搜索头：冒号后纯空白 → true
         assert!(is_empty_search_results_header("Search results for query:"));
-        assert!(is_empty_search_results_header("Search results for query:   "));
+        assert!(is_empty_search_results_header(
+            "Search results for query:   "
+        ));
         assert!(is_empty_search_results_header(
             "  Search results for query:\n\t "
         ));

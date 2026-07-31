@@ -519,38 +519,36 @@ export function ProviderCard({
               )}
             </div>
 
-            {isAggregate ? (
-              aggregateTargets.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1">
-                  {aggregateTargets.map((target) => (
-                    <span
-                      key={target.id}
-                      title={target.detail || undefined}
-                      className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
-                    >
-                      {target.name}
-                    </span>
-                  ))}
-                </div>
-              )
-            ) : (
-              displayUrl && (
-                <button
-                  type="button"
-                  onClick={handleOpenWebsite}
-                  className={cn(
-                    "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
-                    isClickableUrl
-                      ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
-                      : "text-muted-foreground cursor-default",
-                  )}
-                  title={displayUrl}
-                  disabled={!isClickableUrl}
-                >
-                  <span className="min-w-0 truncate">{displayUrl}</span>
-                </button>
-              )
-            )}
+            {isAggregate
+              ? aggregateTargets.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    {aggregateTargets.map((target) => (
+                      <span
+                        key={target.id}
+                        title={target.detail || undefined}
+                        className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                      >
+                        {target.name}
+                      </span>
+                    ))}
+                  </div>
+                )
+              : displayUrl && (
+                  <button
+                    type="button"
+                    onClick={handleOpenWebsite}
+                    className={cn(
+                      "inline-flex max-w-full items-center overflow-hidden text-left text-sm",
+                      isClickableUrl
+                        ? "text-blue-500 transition-colors hover:underline dark:text-blue-400 cursor-pointer"
+                        : "text-muted-foreground cursor-default",
+                    )}
+                    title={displayUrl}
+                    disabled={!isClickableUrl}
+                  >
+                    <span className="min-w-0 truncate">{displayUrl}</span>
+                  </button>
+                )}
           </div>
         </div>
 
@@ -565,8 +563,7 @@ export function ProviderCard({
                     void handleRefreshAggregateUsage();
                   }}
                   disabled={
-                    aggregateTargets.length === 0 ||
-                    isRefreshingAggregateUsage
+                    aggregateTargets.length === 0 || isRefreshingAggregateUsage
                   }
                   className="p-1.5 rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"
                   title={t("usage.refreshAggregateUsage", {

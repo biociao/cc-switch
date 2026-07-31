@@ -16,7 +16,8 @@
 //! tool_use 等）与 message 级事件不受影响，仍然即时转发。
 
 use crate::proxy::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
-use bytes::Bytes;use futures::stream::{Stream, StreamExt};
+use bytes::Bytes;
+use futures::stream::{Stream, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -108,7 +109,12 @@ impl SearchResultsSseFilter {
 
     /// content_block_start：text block 开始缓冲（吞掉 start）；其它类型
     /// 即时转发并登记 index 映射。
-    fn handle_start(&mut self, block: &str, event_name: Option<&str>, mut event: Value) -> Vec<Bytes> {
+    fn handle_start(
+        &mut self,
+        block: &str,
+        event_name: Option<&str>,
+        mut event: Value,
+    ) -> Vec<Bytes> {
         // 防御：上一个 text block 未收到 stop 又来了新 block，先按"保留"收尾
         let mut out = self.finalize_pending();
 
@@ -140,7 +146,12 @@ impl SearchResultsSseFilter {
 
     /// content_block_delta：属于被缓冲 block 的 text_delta 累积进内存不转发；
     /// 其它 delta 过 index 重编号后转发。
-    fn handle_delta(&mut self, block: &str, event_name: Option<&str>, mut event: Value) -> Vec<Bytes> {
+    fn handle_delta(
+        &mut self,
+        block: &str,
+        event_name: Option<&str>,
+        mut event: Value,
+    ) -> Vec<Bytes> {
         let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
 
         if let Some(pending) = self.pending.as_mut() {
@@ -163,7 +174,12 @@ impl SearchResultsSseFilter {
 
     /// content_block_stop：被缓冲 block 在此判定去留；其它 stop 过 index
     /// 重编号后转发。
-    fn handle_stop(&mut self, block: &str, event_name: Option<&str>, mut event: Value) -> Vec<Bytes> {
+    fn handle_stop(
+        &mut self,
+        block: &str,
+        event_name: Option<&str>,
+        mut event: Value,
+    ) -> Vec<Bytes> {
         let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
 
         if self
@@ -239,7 +255,9 @@ impl SearchResultsSseFilter {
         original_index: u64,
     ) -> Bytes {
         match self.index_map.get(&original_index) {
-            Some(&new_index) => rewrite_or_verbatim(block, event_name, event, original_index, new_index),
+            Some(&new_index) => {
+                rewrite_or_verbatim(block, event_name, event, original_index, new_index)
+            }
             // 映射缺失（异常流）：原样透传，不重编号
             None => verbatim(block),
         }
@@ -379,7 +397,9 @@ mod tests {
         let mut response = json!({
             "content": [{ "type": "text", "text": "Search results for query: hits" }]
         });
-        assert!(!filter_empty_search_result_blocks_in_response(&mut response));
+        assert!(!filter_empty_search_result_blocks_in_response(
+            &mut response
+        ));
 
         let mut not_a_message = json!({ "error": { "message": "boom" } });
         assert!(!filter_empty_search_result_blocks_in_response(
@@ -586,7 +606,10 @@ mod tests {
             ),
             sse_event("message_stop", r#"{"type":"message_stop"}"#),
         ] {
-            assert!(output.contains(&expected), "missing {expected:?} in {output}");
+            assert!(
+                output.contains(&expected),
+                "missing {expected:?} in {output}"
+            );
         }
     }
 
@@ -594,10 +617,7 @@ mod tests {
     async fn sse_filter_handles_utf8_split_across_chunks() {
         let full = mixed_sse_stream().into_bytes();
         // 在 "结"（E7 BB 93）内部切断 chunk 边界
-        let jie_start = full
-            .windows(3)
-            .position(|w| w == "结".as_bytes())
-            .unwrap();
+        let jie_start = full.windows(3).position(|w| w == "结".as_bytes()).unwrap();
         let split = jie_start + 1;
         let chunks = vec![full[..split].to_vec(), full[split..].to_vec()];
 
@@ -669,7 +689,10 @@ mod tests {
             .iter()
             .filter_map(|(_, v)| v.get("type").and_then(Value::as_str))
             .collect();
-        assert_eq!(types, vec!["message_start", "message_delta", "message_stop"]);
+        assert_eq!(
+            types,
+            vec!["message_start", "message_delta", "message_stop"]
+        );
     }
 
     #[test]

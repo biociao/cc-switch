@@ -3214,7 +3214,10 @@ mod tests {
     ) -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         Database::create_tables_on_conn(&conn)?;
-        conn.execute("DELETE FROM proxy_config WHERE app_type = 'claude-science'", [])?;
+        conn.execute(
+            "DELETE FROM proxy_config WHERE app_type = 'claude-science'",
+            [],
+        )?;
         conn.execute(
             "UPDATE proxy_config SET enabled = 1, max_retries = 9 WHERE app_type = 'claude'",
             [],
