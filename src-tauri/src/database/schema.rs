@@ -1539,7 +1539,9 @@ impl Database {
     }
 
     /// proxy_config 表定义是否带有 fork v17 的 claude-science 签名（定向自愈用）。
-    fn proxy_config_has_claude_science_signature(conn: &Connection) -> Result<bool, AppError> {
+    pub(crate) fn proxy_config_has_claude_science_signature(
+        conn: &Connection,
+    ) -> Result<bool, AppError> {
         let sql: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proxy_config'",
