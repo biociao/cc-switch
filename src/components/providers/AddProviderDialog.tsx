@@ -51,7 +51,10 @@ export function AddProviderDialog({
   const { t } = useTranslation();
   // 聚合供应商仅 Claude / Claude Desktop / Codex 支持（与后端校验保持一致）
   const showAggregateTab =
-    appId === "claude" || appId === "claude-desktop" || appId === "codex";
+    appId === "claude" ||
+    appId === "claude-science" ||
+    appId === "claude-desktop" ||
+    appId === "codex";
   // OpenCode and OpenClaw don't support universal providers
   const showUniversalTab =
     appId !== "opencode" &&
@@ -420,7 +423,13 @@ export function AddProviderDialog({
           {showAggregateTab && (
             <TabsContent value="aggregate" className="mt-0">
               <AggregateProviderForm
-                appId={appId as "claude" | "claude-desktop" | "codex"}
+                appId={
+                  appId as
+                    | "claude"
+                    | "claude-science"
+                    | "claude-desktop"
+                    | "codex"
+                }
                 submitLabel={t("common.add")}
                 onSubmit={handleSubmit}
                 onCancel={() => onOpenChange(false)}

@@ -113,6 +113,24 @@ describe("AddProviderDialog", () => {
     ).toBeNull();
   });
 
+  it("claude-science 显示聚合 tab，但不显示统一供应商 tab", () => {
+    render(
+      <AddProviderDialog
+        open
+        onOpenChange={vi.fn()}
+        appId="claude-science"
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("tab", { name: "provider.tabAggregate" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "provider.tabUniversal" }),
+    ).toBeNull();
+  });
+
   it("gemini 不显示聚合 tab，但保留统一供应商 tab", () => {
     render(
       <AddProviderDialog

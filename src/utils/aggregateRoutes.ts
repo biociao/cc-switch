@@ -70,7 +70,7 @@ export function getAggregateRouteTargetIds(
  */
 export function getAggregateRouteTargets(
   providers: Provider[],
-  appId: "claude" | "claude-desktop" | "codex",
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex",
   excludeProviderId?: string,
 ): Provider[] {
   return providers.filter(
@@ -113,12 +113,12 @@ export function rowsToCustomRoutes(
 
 /**
  * 归一化路由表（按 app 剔除另一侧的配置）：
- * - claude：trim，仅保留 providerId 与 model 均非空的档位，丢弃 custom；
+ * - claude 系（含 science / desktop）：trim，仅保留 providerId 与 model 均非空的档位，丢弃 custom；
  * - codex：仅保留 key/providerId/model trim 后均非空的 custom 条目（key 也 trim），丢弃四档。
  */
 export function normalizeAggregateRoutes(
   routes: AggregateRoutes,
-  appId: "claude" | "codex",
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex",
 ): AggregateRoutes {
   if (appId === "codex") {
     const custom: Record<string, AggregateRoute> = {};
@@ -161,7 +161,7 @@ export type AggregateRoutesValidation =
  */
 export function validateAggregateRoutes(
   routes: AggregateRoutes,
-  appId: "claude" | "claude-desktop" | "codex",
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex",
   customRows?: AggregateCustomRouteRow[],
 ): AggregateRoutesValidation {
   if (appId === "codex") {

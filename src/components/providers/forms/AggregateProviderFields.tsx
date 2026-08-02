@@ -43,7 +43,7 @@ import {
 const EMPTY_PROVIDER = "__none__";
 
 interface AggregateProviderFieldsProps {
-  appId: "claude" | "claude-desktop" | "codex";
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex";
   /** 不传 onEnabledChange 时视为始终启用（由外层 tab 表达启用语义），且不渲染开关 */
   enabled?: boolean;
   onEnabledChange?: (enabled: boolean) => void;

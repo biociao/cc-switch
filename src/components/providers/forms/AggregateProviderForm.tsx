@@ -23,7 +23,7 @@ import {
 } from "@/utils/aggregateRoutes";
 
 export interface AggregateProviderFormProps {
-  appId: "claude" | "claude-desktop" | "codex";
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex";
   providerId?: string;
   submitLabel: string;
   onSubmit: (values: ProviderFormValues) => Promise<void> | void;
