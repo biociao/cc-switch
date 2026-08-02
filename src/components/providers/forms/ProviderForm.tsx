@@ -386,9 +386,7 @@ function ProviderFormFull({
     }
     setEndpointAutoSelect(initialData?.meta?.endpointAutoSelect ?? true);
     setWebSearchCompat(initialData?.meta?.webSearchCompat ?? "auto");
-    setWebSearchResultFilter(
-      initialData?.meta?.webSearchResultFilter ?? false,
-    );
+    setWebSearchResultFilter(initialData?.meta?.webSearchResultFilter ?? false);
     setLocalIsFullUrl(
       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
     );
@@ -1666,8 +1664,8 @@ function ProviderFormFull({
                   source: "managed_account",
                   authProvider: "codex_oauth",
                   accountId: selectedCodexAccountId ?? undefined,
-              }
-            : undefined,
+                }
+              : undefined,
       // GitHub Copilot 多账号：保存关联的账号 ID
       githubAccountId:
         !aggregateEnabled && isCopilotProvider && selectedGitHubAccountId

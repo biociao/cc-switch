@@ -268,8 +268,7 @@ async fn handle_messages_for_app(
     if api_format.trim() == "anthropic"
         && crate::claude_web_search::web_search_result_filter_enabled(&ctx.provider)
     {
-        return handle_claude_search_results_filter(response, &ctx, &state, connection_guard)
-            .await;
+        return handle_claude_search_results_filter(response, &ctx, &state, connection_guard).await;
     }
 
     // 通用响应处理（透传模式）
@@ -1220,8 +1219,14 @@ async fn handle_claude_search_results_filter(
     // 错误体不含 assistant content，交给通用透传，保证错误形状与 usage
     // 处理与未过滤路径完全一致
     if !status.is_success() {
-        return process_response(response, ctx, state, &CLAUDE_PARSER_CONFIG, connection_guard)
-            .await;
+        return process_response(
+            response,
+            ctx,
+            state,
+            &CLAUDE_PARSER_CONFIG,
+            connection_guard,
+        )
+        .await;
     }
 
     if response.is_sse() {

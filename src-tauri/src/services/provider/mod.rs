@@ -4043,20 +4043,19 @@ impl ProviderService {
             crate::claude_web_search::strip_injected_web_search_deny(&mut live_config, provider);
         }
 
-        let new_snippet = match Self::extract_common_config_snippet_from_settings(
-            app_type.clone(),
-            &live_config,
-        ) {
-            Ok(snippet) => snippet,
-            Err(err) => {
-                log::warn!(
-                    "Failed to extract common config from live for {} provider '{}': {err}",
-                    app_type.as_str(),
-                    provider.id
-                );
-                return;
-            }
-        };
+        let new_snippet =
+            match Self::extract_common_config_snippet_from_settings(app_type.clone(), &live_config)
+            {
+                Ok(snippet) => snippet,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to extract common config from live for {} provider '{}': {err}",
+                        app_type.as_str(),
+                        provider.id
+                    );
+                    return;
+                }
+            };
 
         // 未变化则跳过，避免无谓写库（不切 live 配置时这是常态路径）。
         let current = state
