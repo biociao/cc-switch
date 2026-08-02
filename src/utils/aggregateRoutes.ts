@@ -1,6 +1,7 @@
 import type { AggregateRoute, AggregateRoutes, Provider } from "@/types";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
+import { supportsOfficialProxyTakeover } from "@/utils/providerCapabilities";
 import type { FetchedModel } from "@/lib/api/model-fetch";
 
 // 聚合供应商自身没有端点或凭据；接管时由后端注入本地路由地址和占位认证。
@@ -64,15 +65,19 @@ export function getAggregateRouteTargetIds(
 /**
  * 可作为聚合路由目标的供应商列表：
  * 排除聚合供应商自身（不允许嵌套）与当前正在编辑的供应商（不允许自指）。
+ * 官方供应商默认排除，但保留后端允许接管的目标（Codex 内置官方供应商，
+ * 与 Rust 端 official_provider_supports_proxy_takeover 保持一致）。
  */
 export function getAggregateRouteTargets(
   providers: Provider[],
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex",
   excludeProviderId?: string,
 ): Provider[] {
   return providers.filter(
     (provider) =>
       provider.id !== excludeProviderId &&
-      provider.category !== "official" &&
+      (provider.category !== "official" ||
+        supportsOfficialProxyTakeover(appId, provider)) &&
       !isAggregateProvider(provider),
   );
 }
@@ -108,12 +113,12 @@ export function rowsToCustomRoutes(
 
 /**
  * 归一化路由表（按 app 剔除另一侧的配置）：
- * - claude：trim，仅保留 providerId 与 model 均非空的档位，丢弃 custom；
+ * - claude 系（含 science / desktop）：trim，仅保留 providerId 与 model 均非空的档位，丢弃 custom；
  * - codex：仅保留 key/providerId/model trim 后均非空的 custom 条目（key 也 trim），丢弃四档。
  */
 export function normalizeAggregateRoutes(
   routes: AggregateRoutes,
-  appId: "claude" | "codex",
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex",
 ): AggregateRoutes {
   if (appId === "codex") {
     const custom: Record<string, AggregateRoute> = {};
@@ -156,7 +161,7 @@ export type AggregateRoutesValidation =
  */
 export function validateAggregateRoutes(
   routes: AggregateRoutes,
-  appId: "claude" | "codex",
+  appId: "claude" | "claude-science" | "claude-desktop" | "codex",
   customRows?: AggregateCustomRouteRow[],
 ): AggregateRoutesValidation {
   if (appId === "codex") {

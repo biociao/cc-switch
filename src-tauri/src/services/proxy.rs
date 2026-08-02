@@ -3654,6 +3654,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn aggregate_claude_takeover_propagates_one_m_marker_from_route_model() {
         let mut provider = Provider::with_id(
             "agg".to_string(),
