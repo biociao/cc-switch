@@ -5,9 +5,11 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.19.0+ciao.3] - 2026-08-02
+## [3.19.1+ciao.3] - 2026-08-02
 
 ciao fork release on top of upstream v3.19.1: Claude Science gains WSL support on Windows, the provider dialog gains single / aggregate / universal type tabs (extended to Claude Desktop and Claude Science on the ciao side), and the upstream v3.19.1 maintenance pass is merged in. The two web-search entries directly below already shipped in ciao.2 builds and are documented here for the first time.
+
+> **Note**: Originally tagged `v3.19.0+ciao.3` because the upstream base (`v3.19.1`) was overlooked when stamping the version. The contents shipped are on top of `v3.19.1`; the git tag was repointed to `v3.19.1+ciao.3` (same commit `3d9b2d5`) shortly after, and the published artifact is unchanged.
 
 ### Added
 
