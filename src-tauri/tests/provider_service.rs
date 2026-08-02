@@ -1,8 +1,9 @@
 use serde_json::json;
 
 use cc_switch_lib::{
-    get_claude_settings_path, read_json_file, write_codex_live_atomic, AppError, AppType, McpApps,
-    McpServer, MultiAppConfig, Provider, ProviderMeta, ProviderService,
+    get_claude_settings_path, read_json_file, write_codex_live_atomic, AggregateRoute,
+    AggregateRoutes, AppError, AppType, McpApps, McpServer, MultiAppConfig, Provider, ProviderMeta,
+    ProviderService, UniversalProvider, UniversalProviderApps,
 };
 
 #[path = "support.rs"]
@@ -880,6 +881,168 @@ requires_openai_auth = true
         !live_config.contains("experimental_bearer_token"),
         "official login provider has no API key to inject"
     );
+}
+
+#[test]
+fn provider_service_switch_codex_official_clears_stale_third_party_auth() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    // preservation stays OFF (default): switching to the third-party provider
+    // wrote its key into live auth.json, and that residue is what this test
+    // expects the official switch to clean up.
+    let _home = ensure_test_home();
+
+    let third_party_config = r#"model_provider = "aihubmix"
+model = "gpt-5.4"
+
+[model_providers.aihubmix]
+name = "AiHubMix"
+base_url = "https://aihubmix.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+    // Live key intentionally differs from the DB row so the assertion below
+    // proves the backfill preserved the live copy before it was deleted.
+    let live_auth = json!({ "OPENAI_API_KEY": "stale-live-key" });
+    write_codex_live_atomic(&live_auth, Some(third_party_config))
+        .expect("seed third-party live config");
+
+    let mut initial_config = MultiAppConfig::default();
+    {
+        let manager = initial_config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "third-party".to_string();
+        manager.providers.insert(
+            "third-party".to_string(),
+            Provider::with_id(
+                "third-party".to_string(),
+                "AiHubMix".to_string(),
+                json!({
+                    "auth": {"OPENAI_API_KEY": "old-db-key"},
+                    "config": third_party_config
+                }),
+                None,
+            ),
+        );
+        let mut official_provider = Provider::with_id(
+            "official-provider".to_string(),
+            "OpenAI Official".to_string(),
+            json!({
+                "auth": {},
+                "config": ""
+            }),
+            None,
+        );
+        official_provider.category = Some("official".to_string());
+        manager
+            .providers
+            .insert("official-provider".to_string(), official_provider);
+    }
+
+    let state = create_test_state_with_config(&initial_config).expect("create test state");
+
+    ProviderService::switch(&state, AppType::Codex, "official-provider")
+        .expect("switch to official provider should succeed");
+
+    assert!(
+        !cc_switch_lib::get_codex_auth_path().exists(),
+        "switching to a material-less official provider must delete the stale \
+         third-party auth.json so Codex shows its login screen"
+    );
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::Codex.as_str())
+        .expect("read providers after switch");
+    assert_eq!(
+        providers
+            .get("third-party")
+            .expect("third-party provider exists")
+            .settings_config
+            .pointer("/auth/OPENAI_API_KEY")
+            .and_then(|v| v.as_str()),
+        Some("stale-live-key"),
+        "the live key must be backfilled into the outgoing provider before deletion"
+    );
+
+    let live_config =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        !live_config.contains("experimental_bearer_token"),
+        "official provider has no API key to inject"
+    );
+}
+
+#[test]
+fn provider_service_reswitch_current_official_keeps_live_auth() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    // Re-selecting the already-current provider performs no backfill, so the
+    // cleanup must not run either: without a fresh DB copy of whatever sits
+    // in live auth.json, deleting it would destroy the only copy.
+    let live_auth = json!({ "OPENAI_API_KEY": "residue-key" });
+    write_codex_live_atomic(&live_auth, Some("")).expect("seed live config");
+
+    let mut initial_config = MultiAppConfig::default();
+    {
+        let manager = initial_config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "official-provider".to_string();
+        let mut official_provider = Provider::with_id(
+            "official-provider".to_string(),
+            "OpenAI Official".to_string(),
+            json!({
+                "auth": {},
+                "config": ""
+            }),
+            None,
+        );
+        official_provider.category = Some("official".to_string());
+        manager
+            .providers
+            .insert("official-provider".to_string(), official_provider);
+    }
+
+    let state = create_test_state_with_config(&initial_config).expect("create test state");
+
+    ProviderService::switch(&state, AppType::Codex, "official-provider")
+        .expect("re-switch to current official provider should succeed");
+
+    let auth_value: serde_json::Value =
+        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("auth.json must survive");
+    assert_eq!(
+        auth_value.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+        Some("residue-key"),
+        "no backfill happened, so live auth.json must be left untouched"
+    );
+}
+
+#[test]
+fn read_codex_live_settings_tolerates_missing_auth_when_config_file_exists() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    assert!(
+        cc_switch_lib::read_codex_live_settings().is_err(),
+        "both files missing is still 'no live install'"
+    );
+
+    // auth.json deleted + empty config.toml is the exact state the official
+    // switch cleanup leaves behind; it must stay readable or the next
+    // backfill / hot switch would treat Codex as uninstalled.
+    let config_path = cc_switch_lib::get_codex_config_path();
+    std::fs::create_dir_all(config_path.parent().expect("codex dir")).expect("create codex dir");
+    std::fs::write(&config_path, "").expect("write empty config.toml");
+
+    let live = cc_switch_lib::read_codex_live_settings()
+        .expect("config file present but empty must be readable");
+    assert_eq!(live.get("auth"), Some(&json!({})));
+    assert_eq!(live.get("config").and_then(|v| v.as_str()), Some(""));
 }
 
 #[test]
@@ -2949,4 +3112,146 @@ fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_ba
             .unwrap_or(true),
         "recovery must drop the local proxy base URL"
     );
+}
+
+// ============================================================================
+// 统一供应商（Universal Provider）删除/同步时的聚合依赖检查
+// ============================================================================
+
+/// 构造一个 Codex 聚合供应商，其 custom 路由引用 target_id。
+fn codex_aggregate_provider(id: &str, target_id: &str) -> Provider {
+    let mut custom = std::collections::BTreeMap::new();
+    custom.insert(
+        "gpt-5.5".to_string(),
+        AggregateRoute {
+            provider_id: target_id.to_string(),
+            model: "gpt-5.5".to_string(),
+        },
+    );
+    let mut provider =
+        Provider::with_id(id.to_string(), format!("Aggregate {id}"), json!({}), None);
+    provider.meta = Some(ProviderMeta {
+        aggregate_routes: Some(AggregateRoutes {
+            custom: Some(custom),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    provider
+}
+
+fn universal_provider(id: &str, codex_enabled: bool) -> UniversalProvider {
+    let mut provider = UniversalProvider::new(
+        id.to_string(),
+        format!("Universal {id}"),
+        "custom".to_string(),
+        "https://example.com".to_string(),
+        "sk-test".to_string(),
+    );
+    provider.apps = UniversalProviderApps {
+        claude: false,
+        codex: codex_enabled,
+        gemini: false,
+    };
+    provider
+}
+
+#[test]
+fn delete_universal_blocked_when_codex_child_referenced_by_aggregate() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_universal_provider(&universal_provider("u1", true))
+        .expect("save universal provider");
+    state
+        .db
+        .save_provider(
+            AppType::Codex.as_str(),
+            &codex_aggregate_provider("agg1", "universal-codex-u1"),
+        )
+        .expect("save codex aggregate provider");
+
+    let err = ProviderService::delete_universal(&state, "u1")
+        .expect_err("deleting universal with referenced codex child should fail");
+    match err {
+        AppError::Localized { zh, .. } => {
+            assert!(zh.contains("聚合供应商"), "unexpected message: {zh}")
+        }
+        other => panic!("expected Localized error, got {other:?}"),
+    }
+
+    // 删除被阻止后，统一供应商本身应仍然存在
+    assert!(
+        state
+            .db
+            .get_universal_provider("u1")
+            .expect("get universal provider")
+            .is_some(),
+        "universal provider must survive the blocked delete"
+    );
+}
+
+#[test]
+fn delete_universal_succeeds_when_codex_child_not_referenced() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_universal_provider(&universal_provider("u2", true))
+        .expect("save universal provider");
+    // 聚合路由引用的是其他 provider，不阻碍删除
+    state
+        .db
+        .save_provider(
+            AppType::Codex.as_str(),
+            &codex_aggregate_provider("agg2", "some-other-provider"),
+        )
+        .expect("save codex aggregate provider");
+
+    ProviderService::delete_universal(&state, "u2").expect("delete should succeed");
+    assert!(
+        state
+            .db
+            .get_universal_provider("u2")
+            .expect("get universal provider")
+            .is_none(),
+        "universal provider should be deleted"
+    );
+}
+
+#[test]
+fn sync_universal_blocked_when_disabling_codex_child_referenced_by_aggregate() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let state = create_test_state().expect("create test state");
+    // Codex 开关已关闭：sync 会走删除 codex 子供应商的分支
+    state
+        .db
+        .save_universal_provider(&universal_provider("u3", false))
+        .expect("save universal provider");
+    state
+        .db
+        .save_provider(
+            AppType::Codex.as_str(),
+            &codex_aggregate_provider("agg3", "universal-codex-u3"),
+        )
+        .expect("save codex aggregate provider");
+
+    let err = ProviderService::sync_universal_to_apps(&state, "u3")
+        .expect_err("sync should fail when disabling a referenced codex child");
+    match err {
+        AppError::Localized { zh, .. } => {
+            assert!(zh.contains("聚合供应商"), "unexpected message: {zh}")
+        }
+        other => panic!("expected Localized error, got {other:?}"),
+    }
 }

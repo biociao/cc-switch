@@ -3950,6 +3950,7 @@ impl ProviderService {
         // Use effective current provider (validated existence) to ensure backfill targets valid provider
         let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
 
+        let mut backfill_completed = false;
         if let Some(current_id) = current_id {
             if current_id != id {
                 // Additive mode apps - all providers coexist in the same file,
@@ -3983,6 +3984,8 @@ impl ProviderService {
                                 result
                                     .warnings
                                     .push(format!("backfill_failed:{current_id}"));
+                            } else {
+                                backfill_completed = true;
                             }
                         }
                     }
@@ -4001,6 +4004,30 @@ impl ProviderService {
 
         // Sync to live (write_gemini_live handles security flag internally for Gemini)
         write_live_with_common_config(state.db.as_ref(), &app_type, provider)?;
+
+        // A material-less official Codex provider gets a config-only live
+        // write, which can leave the previous third-party key in
+        // ~/.codex/auth.json and strand the user on a 401 with no login
+        // screen. Only clean up after a successful backfill — the DB copy
+        // made above is what keeps that key recoverable. Failures degrade to
+        // a log entry: config.toml and is_current are already committed, so
+        // failing the switch here would report a switch that in fact happened.
+        if matches!(app_type, AppType::Codex)
+            && backfill_completed
+            && provider.category.as_deref() == Some("official")
+        {
+            let db_auth = provider.settings_config.get("auth");
+            match crate::codex_config::clear_stale_codex_live_auth_after_official_switch(
+                db_auth.unwrap_or(&serde_json::Value::Null),
+            ) {
+                Ok(true) => log::info!(
+                    "Removed stale third-party auth.json after switching to official Codex provider '{}'",
+                    provider.id
+                ),
+                Ok(false) => {}
+                Err(e) => log::warn!("Failed to clean stale Codex auth.json: {e}"),
+            }
+        }
 
         // Hermes is additive, so "switching" doesn't overwrite a live config file
         // — we instead update the top-level `model:` section to point at this
@@ -5613,13 +5640,28 @@ impl ProviderService {
         // 获取统一供应商（用于删除生成的子供应商）
         let provider = state.db.get_universal_provider(id)?;
 
-        // 生成的 Claude 子供应商若被聚合供应商引用，阻止删除
+        // 生成的 Claude/Codex 子供应商若被聚合供应商引用，阻止删除
         // （与 ProviderService::delete 的依赖检查保持一致）
         if let Some(p) = provider.as_ref() {
             if p.apps.claude {
                 let claude_id = format!("universal-claude-{id}");
                 if let Some(dependent) =
                     Self::find_aggregate_dependent(state.db.as_ref(), &AppType::Claude, &claude_id)?
+                {
+                    return Err(AppError::localized(
+                        "provider.aggregate.target_in_use",
+                        format!("供应商正被聚合供应商 {} 引用，无法删除", dependent.name),
+                        format!(
+                            "Provider is referenced by aggregate provider '{}' and cannot be deleted",
+                            dependent.name
+                        ),
+                    ));
+                }
+            }
+            if p.apps.codex {
+                let codex_id = format!("universal-codex-{id}");
+                if let Some(dependent) =
+                    Self::find_aggregate_dependent(state.db.as_ref(), &AppType::Codex, &codex_id)?
                 {
                     return Err(AppError::localized(
                         "provider.aggregate.target_in_use",
@@ -5700,7 +5742,21 @@ impl ProviderService {
             }
             state.db.save_provider("codex", &codex_provider)?;
         } else {
+            // 如果禁用了 Codex，删除对应的子供应商；但若它被聚合供应商引用，
+            // 阻止删除（与 Claude 分支的依赖检查保持一致）
             let codex_id = format!("universal-codex-{id}");
+            if let Some(dependent) =
+                Self::find_aggregate_dependent(state.db.as_ref(), &AppType::Codex, &codex_id)?
+            {
+                return Err(AppError::localized(
+                    "provider.aggregate.target_in_use",
+                    format!("供应商正被聚合供应商 {} 引用，无法删除", dependent.name),
+                    format!(
+                        "Provider is referenced by aggregate provider '{}' and cannot be deleted",
+                        dependent.name
+                    ),
+                ));
+            }
             let _ = state.db.delete_provider("codex", &codex_id);
         }
 
