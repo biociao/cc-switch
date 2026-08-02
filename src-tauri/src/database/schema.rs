@@ -3173,7 +3173,6 @@ mod tests {
     fn ciao_v17_is_healed_back_to_v16_with_state_moved_to_settings() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         Database::create_tables_on_conn(&conn)?;
-
         // 模拟 fork v17：重建带 claude-science CHECK 的 proxy_config，并补种
         // claude-science（接管开启、自定义重试次数）与 claude 两行
         conn.execute("DROP TABLE proxy_config", [])?;

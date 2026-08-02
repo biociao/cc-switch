@@ -1457,6 +1457,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn claude_switch_injects_web_search_deny_for_disabled_provider() {
         with_test_home(|state, _| {
             // webSearchCompat = "disabled" 的中转渠道：写入 live 时注入
@@ -1493,6 +1494,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn claude_switch_away_strips_injected_web_search_deny_from_backfill() {
         with_test_home(|state, _| {
             let relay = claude_relay_provider_with_web_search_compat("relay", "disabled");

@@ -729,19 +729,21 @@ mod tests {
     fn make_aggregate_provider(id: &str, routes: AggregateRoutes) -> Provider {
         let mut provider =
             Provider::with_id(id.to_string(), format!("Aggregate {id}"), json!({}), None);
-        let mut meta = ProviderMeta::default();
-        meta.aggregate_routes = Some(routes);
-        provider.meta = Some(meta);
+        provider.meta = Some(ProviderMeta {
+            aggregate_routes: Some(routes),
+            ..Default::default()
+        });
         provider
     }
 
     fn single_fable_route(target_id: &str, model: &str) -> AggregateRoutes {
-        let mut routes = AggregateRoutes::default();
-        routes.fable = Some(AggregateRoute {
-            provider_id: target_id.to_string(),
-            model: model.to_string(),
-        });
-        routes
+        AggregateRoutes {
+            fable: Some(AggregateRoute {
+                provider_id: target_id.to_string(),
+                model: model.to_string(),
+            }),
+            ..Default::default()
+        }
     }
 
     #[tokio::test]
