@@ -1184,7 +1184,13 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
-        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
+        // 聚合路由合成 provider（命中 routed_provider_sources）不走 route 表：聚合
+        // 的档位已在展开时解析，合成 provider 的 env.ANTHROPIC_MODEL 已被
+        // synthesize_routed_provider 覆写为档位上游模型，apply_model_mapping 会把
+        // 任意 Desktop 请求模型统一映射到该上游模型。
+        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop)
+            && !self.routed_provider_sources.contains_key(&provider.id)
+        {
             crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
                 .map_err(|e| ProxyError::InvalidRequest(e.to_string()))?
         } else {

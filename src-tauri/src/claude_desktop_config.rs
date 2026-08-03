@@ -190,7 +190,7 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
     };
     let missing_route_mappings = current_provider.as_ref().is_some_and(|provider| {
         matches!(provider_mode(provider), ClaudeDesktopMode::Proxy)
-            && proxy_model_routes(provider).is_err()
+            && resolve_proxy_routes(provider).is_err()
     });
 
     Ok(ClaudeDesktopStatus {
@@ -635,6 +635,72 @@ pub fn proxy_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>
     Ok(result)
 }
 
+/// 从聚合供应商的档位路由构建 Claude Desktop 的模型路由列表。
+///
+/// 聚合供应商不持有 `claudeDesktopModelRoutes`；其 Claude 四档路由
+/// （haiku/sonnet/opus/fable）各自映射到固定的 Claude-safe route id
+/// （复用 [`DEFAULT_PROXY_ROUTES`] 的 route_id / supports_1m），upstream
+/// 为档位路由的目标模型名。codex 专用 `custom` 路由在此不参与。
+/// 未配置任何 Claude 档位时返回 routes_missing 错误。
+pub fn aggregate_model_routes(
+    provider: &Provider,
+) -> Result<Vec<ResolvedModelRoute>, AppError> {
+    let routes = provider.aggregate_routes().ok_or_else(|| {
+        AppError::localized(
+            "claude_desktop.provider.routes_missing",
+            "Claude Desktop 本地路由模式缺少模型路由映射",
+            "Claude Desktop proxy mode is missing model route mappings",
+        )
+    })?;
+
+    let mut result = Vec::new();
+    for default_route in DEFAULT_PROXY_ROUTES {
+        let tier_route = match default_route.env_key {
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL" => routes.haiku.as_ref(),
+            "ANTHROPIC_DEFAULT_SONNET_MODEL" => routes.sonnet.as_ref(),
+            "ANTHROPIC_DEFAULT_OPUS_MODEL" => routes.opus.as_ref(),
+            "ANTHROPIC_DEFAULT_FABLE_MODEL" => routes.fable.as_ref(),
+            _ => None,
+        };
+        let Some(tier_route) = tier_route else {
+            continue;
+        };
+        let upstream_model = tier_route.model.trim();
+        if upstream_model.is_empty() {
+            continue;
+        }
+        result.push(ResolvedModelRoute {
+            route_id: default_route.route_id.to_string(),
+            upstream_model: upstream_model.to_string(),
+            label_override: None,
+            supports_1m: default_route.supports_1m,
+        });
+    }
+
+    result.sort_by(|a, b| a.route_id.cmp(&b.route_id));
+
+    if result.is_empty() {
+        return Err(AppError::localized(
+            "claude_desktop.provider.routes_missing",
+            "Claude Desktop 本地路由模式至少需要一个模型路由映射",
+            "Claude Desktop proxy mode requires at least one model route mapping",
+        ));
+    }
+
+    Ok(result)
+}
+
+/// 统一解析 Claude Desktop 本地路由模式的模型路由：
+/// - 聚合供应商：从档位路由构建（[`aggregate_model_routes`]）
+/// - 普通供应商：读取 `claudeDesktopModelRoutes`（[`proxy_model_routes`]）
+pub fn resolve_proxy_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>, AppError> {
+    if provider.is_aggregate() {
+        aggregate_model_routes(provider)
+    } else {
+        proxy_model_routes(provider)
+    }
+}
+
 fn next_catalog_safe_route_id(
     existing: &[ResolvedModelRoute],
     reserved: &std::collections::HashSet<String>,
@@ -662,7 +728,7 @@ fn next_catalog_safe_route_id(
 }
 
 pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
-    let routes = proxy_model_routes(provider)?;
+    let routes = resolve_proxy_routes(provider)?;
     let data: Vec<Value> = routes
         .iter()
         .map(|route| {
@@ -713,7 +779,7 @@ pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<V
         })?;
     let requested = strip_one_m_suffix_for_route_lookup(&requested_raw);
 
-    let routes = proxy_model_routes(provider)?;
+    let routes = resolve_proxy_routes(provider)?;
     let upstream_model = routes
         .iter()
         .find(|r| r.route_id == requested)
@@ -990,13 +1056,27 @@ fn apply_provider_to_paths_inner(
     provider: &Provider,
     paths: &ClaudeDesktopPaths,
 ) -> Result<(), AppError> {
-    // 聚合供应商自身不持有端点 / 模型路由；只是把请求按档位分发到目标 provider，
-    // 真正的 profile 由各档目标 provider 在被切到当前时单独写入。这里直接跳过 profile
-    // 写入，避免误把聚合当作可写的"代理供应商"要求其声明 base_url / 模型路由。
+    // 聚合供应商自身不持有端点 / 模型路由；请求经本地路由按档位分发到目标 provider。
+    // 这里仍要为聚合写入真实的 Proxy-mode gateway profile（base_url + token +
+    // 各档路由构成的 inferenceModels），否则 Claude Desktop 拿不到本地网关地址，
+    // 模型映射和模型列表都无法工作。路由目标本身的端点/认证由各档 provider 承担。
     if provider.is_aggregate() {
-        // 仍需把 deployment_mode 切到 3p / 写入 meta，方便 Claude Desktop 看到当前 provider。
+        let base_url = proxy_gateway_base_url_from_db(db)?;
+        let api_key = get_or_create_gateway_token(db)?;
+        let routes = aggregate_model_routes(provider)?;
+        let model_specs = routes
+            .iter()
+            .map(|route| InferenceModelSpec {
+                name: route.route_id.clone(),
+                label_override: route.label_override.clone(),
+                supports_1m: route.supports_1m,
+            })
+            .collect::<Vec<_>>();
+        let profile = build_gateway_profile(&base_url, &api_key, Some(model_specs.as_slice()));
+
         write_deployment_mode(&paths.normal_config_path, "3p")?;
         write_deployment_mode(&paths.threep_config_path, "3p")?;
+        write_json_file(&paths.profile_path, &profile)?;
         write_meta(&paths.meta_path, Some(PROFILE_ID))?;
         return Ok(());
     }
@@ -2355,9 +2435,94 @@ mod tests {
 
         apply_provider_to_paths(&db, &provider, &paths).expect("apply aggregate");
 
-        // 仍把 deployment_mode 切到 3p，保证 Claude Desktop 在有当前 provider
+        // 把 deployment_mode 切到 3p，保证 Claude Desktop 在有当前 provider
         // 指向聚合时识别为非官方配置。
         let normal: Value = read_json_file(&paths.normal_config_path).expect("read normal config");
         assert_eq!(normal["deploymentMode"], json!("3p"));
+
+        // 聚合供应商应写入真实 gateway profile：本地代理地址 + token +
+        // 各档路由构成的 inferenceModels，供 Claude Desktop 拉取模型列表与映射请求。
+        let profile: Value = read_json_file(&paths.profile_path).expect("read desktop profile");
+        assert_eq!(profile["inferenceProvider"], json!("gateway"));
+        assert_eq!(
+            profile["inferenceGatewayBaseUrl"],
+            json!(proxy_gateway_base_url_from_db(&db).expect("base url"))
+        );
+        let models = profile["inferenceModels"]
+            .as_array()
+            .expect("inferenceModels array");
+        let model_ids: Vec<String> = models
+            .iter()
+            .map(|item| item["name"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(model_ids, vec!["claude-sonnet-5"]);
+    }
+
+    #[test]
+    fn claude_desktop_aggregate_model_routes_builds_tier_routes() {
+        let provider = aggregate_provider("agg");
+        let routes = aggregate_model_routes(&provider).expect("aggregate model routes");
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route_id, "claude-sonnet-5");
+        assert_eq!(routes[0].upstream_model, "claude-sonnet-4-6");
+        assert!(routes[0].supports_1m);
+
+        // 未配置任何 Claude 档位（纯 codex custom）→ 报 routes_missing
+        let mut codex_only = Provider::with_id(
+            "codex-agg".into(),
+            "CodexAgg".into(),
+            json!({}),
+            Some("https://example.com".to_string()),
+        );
+        codex_only.meta = Some(ProviderMeta {
+            aggregate_routes: Some(crate::provider::AggregateRoutes {
+                custom: Some(std::collections::BTreeMap::from([(
+                    "gpt-5".to_string(),
+                    crate::provider::AggregateRoute {
+                        provider_id: "downstream".to_string(),
+                        model: "gpt-5-upstream".to_string(),
+                    },
+                )])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(codex_only.is_aggregate());
+        assert!(aggregate_model_routes(&codex_only).is_err());
+    }
+
+    #[test]
+    fn claude_desktop_map_proxy_request_model_resolves_aggregate_tier() {
+        let provider = aggregate_provider("agg");
+
+        // 精确匹配配置的 sonnet 档 route id
+        let body = map_proxy_request_model(json!({ "model": "claude-sonnet-5" }), &provider)
+            .expect("map sonnet");
+        assert_eq!(body["model"], json!("claude-sonnet-4-6"));
+
+        // 角色关键词回落：带发布日期的完整官方名归入 sonnet 档
+        let body = map_proxy_request_model(
+            json!({ "model": "claude-sonnet-5-20260102" }),
+            &provider,
+        )
+        .expect("map dated sonnet");
+        assert_eq!(body["model"], json!("claude-sonnet-4-6"));
+
+        // 未配置的档位（如 haiku）→ route_unknown 错误
+        let err = map_proxy_request_model(json!({ "model": "claude-haiku-4-5" }), &provider)
+            .expect_err("unconfigured tier should error");
+        assert!(err.to_string().contains("claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn claude_desktop_model_list_includes_aggregate_tiers() {
+        let provider = aggregate_provider("agg");
+        let response = model_list_response(&provider).expect("model list");
+
+        let data = response["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["id"], json!("claude-sonnet-5"));
+        assert_eq!(data[0]["supports1m"], json!(true));
     }
 }
