@@ -642,9 +642,7 @@ pub fn proxy_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>
 /// （复用 [`DEFAULT_PROXY_ROUTES`] 的 route_id / supports_1m），upstream
 /// 为档位路由的目标模型名。codex 专用 `custom` 路由在此不参与。
 /// 未配置任何 Claude 档位时返回 routes_missing 错误。
-pub fn aggregate_model_routes(
-    provider: &Provider,
-) -> Result<Vec<ResolvedModelRoute>, AppError> {
+pub fn aggregate_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>, AppError> {
     let routes = provider.aggregate_routes().ok_or_else(|| {
         AppError::localized(
             "claude_desktop.provider.routes_missing",
@@ -2523,11 +2521,9 @@ mod tests {
         assert_eq!(body["model"], json!("claude-sonnet-4-6"));
 
         // 角色关键词回落：带发布日期的完整官方名归入 sonnet 档
-        let body = map_proxy_request_model(
-            json!({ "model": "claude-sonnet-5-20260102" }),
-            &provider,
-        )
-        .expect("map dated sonnet");
+        let body =
+            map_proxy_request_model(json!({ "model": "claude-sonnet-5-20260102" }), &provider)
+                .expect("map dated sonnet");
         assert_eq!(body["model"], json!("claude-sonnet-4-6"));
 
         // 未配置的档位（如 haiku）→ route_unknown 错误
