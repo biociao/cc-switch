@@ -5,6 +5,29 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.1+ciao.5] - 2026-08-03
+
+ciao fork release on top of upstream `v3.19.1`. The headline fix is the **Moonshot Kimi context-window fallback now follows the configured model** — a Moonshot provider routing `kimi-k3` gets the 1M window instead of being clamped to the K2.7 256K default, while K2.7 and unset-model providers keep the conservative default. Upstream's Qwen3.8 Max built-in pricing (#6053) is merged in alongside.
+
+> **Note**: `ciao.4` shipped its release notes without bumping the version fields (`package.json`, `tauri.conf.json`, `Cargo.toml` stayed at `+ciao.3`). The fields jump from `+ciao.3` straight to `+ciao.5` here; no `+ciao.4` artifact was ever stamped with that label.
+
+**Stats**: 2 commits | 2 files changed | +228 insertions | -1 deletion
+
+### Fixed
+
+- **Moonshot Kimi Providers Routing K3 Were Clamped to the 256K Context Window**: ciao.4 made the Kimi context-window fallback endpoint-aware (`api.moonshot.cn/anthropic` → 262144), but the Moonshot endpoint serves both K2.7 (256K) and K3 (1M), so every Moonshot provider — including ones explicitly routing `kimi-k3` — got the K2.7 default whenever `CLAUDE_CODE_MAX_CONTEXT_TOKENS` was unset. The fallback is now model-aware: `kimi_for_coding_default_context_tokens()` inspects the provider's model slots (`ANTHROPIC_MODEL` plus the per-tier `ANTHROPIC_DEFAULT_*_MODEL` overrides and `CLAUDE_CODE_SUBAGENT_MODEL`) and returns 1048576 when at least one slot is set and every set slot targets K3 (`kimi-k3` on Moonshot, `k3` on Kimi Code). The K3 256K tier (`k3-256k`) and the high-speed variant (`kimi-for-coding-highspeed`) are explicitly excluded so they keep the 256K window; the Kimi Code endpoint (`api.kimi.com/coding`) never serves K3 and always stays at 262144; a provider with no model slot set keeps the conservative 262144 and can override via explicit env on next save. Four new tests pin the matrix: Moonshot+K3 → 1M, Moonshot+K2.7 → 256K, Moonshot with no model → 256K, and tier-only slot (`ANTHROPIC_DEFAULT_HAIKU_MODEL=kimi-k3`) → 1M.
+
+### Added
+
+- **Qwen3.8 Max Built-in Model Pricing** (from upstream #6053): `qwen3.8-max` joins the seeded pricing table at ¥2 input / ¥6 output per million tokens (¥0.25 cache hit, ¥2.50 cache write), so usage against the new Qwen flagship no longer silently bills at zero. Existing databases backfill at startup the same way the ciao.3 pricing seeds did.
+
+### Upgrade notes
+
+- No database schema migration in this release — the pricing seed reuses the existing startup backfill, and `SCHEMA_VERSION` stays at 16.
+- Existing Moonshot Kimi providers pick up the corrected default on the next apply/switch: if your provider routes `kimi-k3` and you never set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` explicitly, the live settings now inject 1048576 instead of 262144. Providers with an explicit env value are untouched — explicit always wins over the fallback.
+
+---
+
 ## [3.19.1+ciao.4] - 2026-08-03
 
 ciao fork release on top of upstream `v3.19.1`. The headline fix is **Claude Desktop aggregate providers** — adding an aggregate provider in Claude Desktop now no longer collides with the strict-mode provider validation. Alongside it, Claude Science gains proxy-side `/claude-science/v1/models` so its model picker no longer depends on Anthropic OAuth, Claude Code's Kimi presets finally report their real context windows instead of the 200K Claude Code default, the local proxy repairs strict-Anthropic-compatible endpoints that reject orphan `tool_use`/`tool_result` pairs (DeepSeek, Volcengine Ark, Kimi, MiniMax), and Hermes prompt filename aligns with what Hermes actually reads.
