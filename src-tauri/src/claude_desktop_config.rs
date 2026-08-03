@@ -226,6 +226,13 @@ pub fn is_official_provider(provider: &Provider) -> bool {
 }
 
 pub fn provider_mode(provider: &Provider) -> ClaudeDesktopMode {
+    // 聚合供应商自身没有端点，必须经本地路由按档位分发到目标 provider；
+    // 即使用户没有显式声明 mode，也只能按 Proxy 处理，否则 validate_direct_provider
+    // 会用 settings_config.env.{ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN} 校验而聚合
+    // 不提供这两项（占位 settings_config == {}），导致「缺少 env 配置」错误。
+    if provider.is_aggregate() {
+        return ClaudeDesktopMode::Proxy;
+    }
     provider
         .meta
         .as_ref()
@@ -486,6 +493,13 @@ fn is_managed_oauth_proxy_provider(provider: &Provider) -> bool {
 
 pub fn validate_provider(provider: &Provider) -> Result<(), AppError> {
     if is_official_provider(provider) {
+        return Ok(());
+    }
+
+    // 聚合供应商按设计不持有端点/凭据，端点和认证来自各档目标 provider；
+    // 不在这里校验 env 或 base_url/key，否则用户添加聚合时会撞到直连/代理
+    // 校验的双重拒绝。路由目标本身的合法性由 aggregate_routes 的引用关系保证。
+    if provider.is_aggregate() {
         return Ok(());
     }
 
@@ -976,6 +990,17 @@ fn apply_provider_to_paths_inner(
     provider: &Provider,
     paths: &ClaudeDesktopPaths,
 ) -> Result<(), AppError> {
+    // 聚合供应商自身不持有端点 / 模型路由；只是把请求按档位分发到目标 provider，
+    // 真正的 profile 由各档目标 provider 在被切到当前时单独写入。这里直接跳过 profile
+    // 写入，避免误把聚合当作可写的"代理供应商"要求其声明 base_url / 模型路由。
+    if provider.is_aggregate() {
+        // 仍需把 deployment_mode 切到 3p / 写入 meta，方便 Claude Desktop 看到当前 provider。
+        write_deployment_mode(&paths.normal_config_path, "3p")?;
+        write_deployment_mode(&paths.threep_config_path, "3p")?;
+        write_meta(&paths.meta_path, Some(PROFILE_ID))?;
+        return Ok(());
+    }
+
     let profile = match provider_mode(provider) {
         ClaudeDesktopMode::Direct => {
             let credentials = direct_gateway_credentials(provider)?;
@@ -2280,5 +2305,59 @@ mod tests {
             None,
         );
         assert!(!is_compatible_direct_provider(&missing_bearer));
+    }
+
+    fn aggregate_provider(id: &str) -> Provider {
+        // 聚合供应商：占位 settings_config（无 env / 无 base_url）+ meta.aggregateRoutes
+        // 至少一档路由，使 is_aggregate() == true。
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            "Aggregate".to_string(),
+            json!({}),
+            Some("https://example.com".to_string()),
+        );
+        provider.meta = Some(ProviderMeta {
+            aggregate_routes: Some(crate::provider::AggregateRoutes {
+                sonnet: Some(crate::provider::AggregateRoute {
+                    provider_id: "downstream-sonnet".to_string(),
+                    model: "claude-sonnet-4-6".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        provider
+    }
+
+    #[test]
+    fn claude_desktop_aggregate_provider_passes_validate() {
+        // 修复 issue：聚合供应商 settings_config 占位 {}、无 env 字段，原先
+        // validate_provider 走默认 Direct → 直连校验"缺少 env 配置"错误。
+        // 修复后 provider_mode 对聚合恒返回 Proxy，validate_provider 早退放行。
+        let provider = aggregate_provider("agg");
+
+        assert!(provider.is_aggregate());
+        assert_eq!(provider_mode(&provider), ClaudeDesktopMode::Proxy);
+        assert!(
+            validate_provider(&provider).is_ok(),
+            "aggregate provider should pass validate_provider without env/base_url"
+        );
+    }
+
+    #[test]
+    fn claude_desktop_aggregate_apply_does_not_require_model_routes() {
+        // 聚合供应商 apply 时不应去读 claudeDesktopModelRoutes，避免误把聚合
+        // 当作普通代理供应商要求其声明 base_url / 模型路由表。
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        let provider = aggregate_provider("agg");
+        let db = test_db();
+
+        apply_provider_to_paths(&db, &provider, &paths).expect("apply aggregate");
+
+        // 仍把 deployment_mode 切到 3p，保证 Claude Desktop 在有当前 provider
+        // 指向聚合时识别为非官方配置。
+        let normal: Value = read_json_file(&paths.normal_config_path).expect("read normal config");
+        assert_eq!(normal["deploymentMode"], json!("3p"));
     }
 }
