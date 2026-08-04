@@ -5,6 +5,24 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.1+ciao.6] - 2026-08-04
+
+ciao fork release on top of upstream `v3.19.1`. The headline fixes land in Claude Desktop and Claude Science: aggregate providers now support **model mapping** so routes can rewrite model ids per target, and the Claude Science `/v1/models` route now answers in the **Anthropic-style model schema** so the Science model picker renders it. A `cargo fmt` nit that blocked CI on `ciao-dev` is cleaned up alongside.
+
+> **Note**: `ciao.6` was originally tagged without bumping the version fields (`package.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock` stayed at `+ciao.5`), so the published build reported itself as `ciao.5` — the same slip `ciao.4` made. The tag now points at this commit, which stamps the fields correctly and adds tooling so it cannot happen again: `scripts/bump-version.mjs` bumps all four fields in one command (`pnpm bump <version>`), and the release workflow fails fast when a tag does not match the version fields.
+
+**Stats**: 3 commits | 2 files changed | +201 insertions | -11 deletions
+
+### Added
+
+- **Model Mapping for Claude Desktop Aggregate Providers**: aggregate providers in Claude Desktop can now declare per-target model rewrites, so a route that points at a provider serving a differently-named model still produces a valid Desktop config instead of passing through an id the target does not recognize.
+
+### Fixed
+
+- **Claude Science `/v1/models` Returned the Wrong Schema**: ciao.4 added `GET /claude-science/v1/models` so the Science model picker loads without Anthropic OAuth, but the response used cc-switch's internal shape rather than the Anthropic-style model schema the Science client renders. The route now emits the Anthropic-style schema, so the model dropdown (including the Fable tier when configured) populates correctly.
+
+---
+
 ## [3.19.1+ciao.4] - 2026-08-03
 
 ciao fork release on top of upstream `v3.19.1`. The headline fix is **Claude Desktop aggregate providers** — adding an aggregate provider in Claude Desktop now no longer collides with the strict-mode provider validation. Alongside it, Claude Science gains proxy-side `/claude-science/v1/models` so its model picker no longer depends on Anthropic OAuth, Claude Code's Kimi presets finally report their real context windows instead of the 200K Claude Code default, the local proxy repairs strict-Anthropic-compatible endpoints that reject orphan `tool_use`/`tool_result` pairs (DeepSeek, Volcengine Ark, Kimi, MiniMax), and Hermes prompt filename aligns with what Hermes actually reads.
