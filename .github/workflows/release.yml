@@ -35,6 +35,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The tag is what users download, but the app reports the version baked
+      # into package.json / tauri.conf.json / Cargo.toml. Fail fast when they
+      # diverge instead of shipping a build that reports the previous release.
+      - name: Verify tag matches version fields
+        run: node scripts/bump-version.mjs --check-tag ${{ github.ref_name }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
