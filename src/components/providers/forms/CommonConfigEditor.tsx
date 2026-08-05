@@ -19,6 +19,8 @@ interface CommonConfigEditorProps {
   onModalClose: () => void;
   onExtract?: () => void;
   isExtracting?: boolean;
+  /** 表单模式下隐藏原始 JSON 编辑器（结构化复选框 + 通用配置入口仍保留） */
+  showJsonEditor?: boolean;
 }
 
 export function CommonConfigEditor({
@@ -34,6 +36,7 @@ export function CommonConfigEditor({
   onModalClose,
   onExtract,
   isExtracting,
+  showJsonEditor = true,
 }: CommonConfigEditorProps) {
   const { t } = useTranslation();
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -94,6 +97,16 @@ export function CommonConfigEditor({
         effortMax: false,
         disableAutoUpgrade: false,
       };
+    }
+  }, [localValue]);
+
+  // 表单模式下用于判断底层 JSON 是否可解析（无效时复选框改动会被忽略）
+  const isConfigJsonValid = useMemo(() => {
+    try {
+      JSON.parse(localValue || "{}");
+      return true;
+    } catch {
+      return false;
     }
   }, [localValue]);
 
@@ -160,7 +173,13 @@ export function CommonConfigEditor({
     <>
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <Label htmlFor="settingsConfig">{t("provider.configJson")}</Label>
+          {showJsonEditor ? (
+            <Label htmlFor="settingsConfig">{t("provider.configJson")}</Label>
+          ) : (
+            <span className="text-xs font-medium text-muted-foreground">
+              {t("claudeConfig.configLabel")}
+            </span>
+          )}
           <div className="flex items-center gap-2">
             <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
               <input
@@ -247,20 +266,30 @@ export function CommonConfigEditor({
             <span>{t("claudeConfig.disableAutoUpgrade")}</span>
           </label>
         </div>
-        <JsonEditor
-          value={localValue}
-          onChange={handleLocalChange}
-          placeholder={`{
+        {!showJsonEditor && !isConfigJsonValid && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            {t("claudeConfig.jsonInvalidInFormMode", {
+              defaultValue:
+                "当前配置 JSON 无法解析，结构化选项不可用。请切换到「JSON」模式修正。",
+            })}
+          </p>
+        )}
+        {showJsonEditor && (
+          <JsonEditor
+            value={localValue}
+            onChange={handleLocalChange}
+            placeholder={`{
   "env": {
     "ANTHROPIC_BASE_URL": "https://your-api-endpoint.com",
     "ANTHROPIC_AUTH_TOKEN": "your-api-key-here"
   }
 }`}
-          darkMode={isDarkMode}
-          rows={14}
-          showValidation={true}
-          language="json"
-        />
+            darkMode={isDarkMode}
+            rows={14}
+            showValidation={true}
+            language="json"
+          />
+        )}
       </div>
 
       <FullScreenPanel
