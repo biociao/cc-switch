@@ -83,7 +83,8 @@
     "enableTeammates": "Teammates Mode",
     "enableToolSearch": "Enable Tool Search",
     "effortMax": "Max Effort Thinking",
-    "disableAutoUpgrade": "Disable Auto-Upgrade"
+    "disableAutoUpgrade": "Disable Auto-Upgrade",
+    "jsonInvalidInFormMode": "The current config JSON can't be parsed, so the structured options are unavailable. Switch to \"JSON\" mode to fix it."
   },
   "header": {
     "viewOnGithub": "View on GitHub",
@@ -103,6 +104,10 @@
     "connectivityCheck": "Connectivity check",
     "tabProvider": "Provider",
     "tabUniversal": "Universal",
+    "configModeForm": "Form",
+    "configModeJson": "JSON",
+    "configModeFormHint": "Structured options sync to the underlying config automatically. Switch to \"JSON\" mode to edit more fields.",
+    "configModeJsonHint": "Edit the raw config JSON directly. Switch back to \"Form\" to restore the structured options.",
     "noProviders": "No providers added yet",
     "noProvidersDescription": "If you already have a config, click \"Import Current Config\" — all data will be safely saved in a default provider",
     "noProvidersDescriptionSnippet": "Settings other than API key and endpoint (e.g. plugins) will be saved to a common config snippet for sharing across providers",

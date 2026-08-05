@@ -83,7 +83,8 @@
     "enableTeammates": "Teammates 模式",
     "enableToolSearch": "启用 Tool Search",
     "effortMax": "最大强度思考",
-    "disableAutoUpgrade": "禁用自动升级"
+    "disableAutoUpgrade": "禁用自动升级",
+    "jsonInvalidInFormMode": "当前配置 JSON 无法解析，结构化选项不可用。请切换到「JSON」模式修正。"
   },
   "header": {
     "viewOnGithub": "在 GitHub 上查看",
@@ -103,6 +104,10 @@
     "connectivityCheck": "检测连通",
     "tabProvider": "供应商",
     "tabUniversal": "统一供应商",
+    "configModeForm": "表单",
+    "configModeJson": "JSON",
+    "configModeFormHint": "结构化选项会自动同步到底层配置；需要编辑更多字段时切换到「JSON」模式。",
+    "configModeJsonHint": "直接编辑原始配置 JSON；切换到「表单」可恢复结构化选项。",
     "noProviders": "还没有添加任何供应商",
     "noProvidersDescription": "如果你已有配置，请点击\"导入当前配置\"，所有数据将安全保存在 default 供应商中",
     "noProvidersDescriptionSnippet": "除 Key 和请求地址外的数据（如插件配置）会被保存到通用配置片段，用于在不同供应商之间共享",
