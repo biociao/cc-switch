@@ -162,8 +162,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = "NewAPI"
 base_url = "${codexBaseUrl}"
-wire_api = "responses"
-requires_openai_auth = true`;
+wire_api = "responses"`;
     return {
       auth: {
         OPENAI_API_KEY: apiKey,

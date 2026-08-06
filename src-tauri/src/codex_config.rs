@@ -1248,7 +1248,22 @@ fn set_codex_model_catalog_json_field(
 
     match catalog_path {
         Some(_) => {
-            doc["model_catalog_json"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            // Only claim the pointer when it is absent or already cc-switch-owned.
+            // A user-managed external catalog file (custom filename or path) is
+            // left untouched, mirroring the None arm's ownership rule that
+            // `resolve_cc_switch_catalog_path` relies on.
+            let is_cc_switch_owned = doc
+                .get("model_catalog_json")
+                .and_then(|item| item.as_str())
+                .map(|path| {
+                    Path::new(path).file_name().and_then(|name| name.to_str())
+                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                })
+                .unwrap_or(true);
+            if is_cc_switch_owned {
+                doc["model_catalog_json"] =
+                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            }
         }
         None => {
             let should_remove = doc
@@ -1677,11 +1692,61 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
             .and_then(|item| item.as_table_mut())
         {
             provider_table["experimental_bearer_token"] = toml_edit::value(token);
+            // Codex 0.144+ treats `requires_openai_auth = true` as an explicit
+            // request for ChatGPT OAuth (bypassing the bearer token and any
+            // local proxy), so a third-party custom provider must opt out.
+            provider_table["requires_openai_auth"] = toml_edit::value(false);
             return Ok(doc.to_string());
         }
     }
 
     doc["experimental_bearer_token"] = toml_edit::value(token);
+    Ok(doc.to_string())
+}
+
+/// Normalize a third-party live config so Codex 0.144+ does not force ChatGPT
+/// OAuth: legacy stored configs may still carry `requires_openai_auth = true`,
+/// which Codex now treats as an explicit ChatGPT OAuth requirement — auth then
+/// goes to auth.openai.com directly, bypassing the provider's bearer token and
+/// any local proxy (#4393).
+///
+/// Only the active **custom** model provider table is touched; reserved
+/// provider IDs (owned by the Codex CLI), missing provider tables, and configs
+/// without the flag are returned unchanged. Official providers must never be
+/// routed through this function — their `requires_openai_auth = true` under the
+/// shared custom id is deliberate (see `codex_official_provider_table`).
+pub fn normalize_codex_third_party_custom_provider_auth(
+    config_text: &str,
+) -> Result<String, AppError> {
+    if config_text.trim().is_empty() || !config_text.contains("requires_openai_auth") {
+        return Ok(config_text.to_string());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let Some(provider_id) = active_codex_model_provider_id(&doc) else {
+        return Ok(doc.to_string());
+    };
+    if !is_custom_codex_model_provider_id(&provider_id) {
+        return Ok(doc.to_string());
+    }
+
+    if let Some(provider_table) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|table| table.get_mut(provider_id.as_str()))
+        .and_then(|item| item.as_table_mut())
+    {
+        if provider_table
+            .get("requires_openai_auth")
+            .and_then(|item| item.as_bool())
+            == Some(true)
+        {
+            provider_table["requires_openai_auth"] = toml_edit::value(false);
+        }
+    }
     Ok(doc.to_string())
 }
 
@@ -2114,6 +2179,19 @@ pub fn write_codex_live_for_provider(
             && !crate::settings::preserve_codex_official_auth_on_switch());
 
     if should_write_auth {
+        // 存量第三方配置可能残留 `requires_openai_auth = true`，逐字写会把它带进
+        // live config.toml，Codex 0.144+ 随之强制 ChatGPT OAuth（#4393），逐字写前
+        // 先归一化。官方通道（含统一会话注入的 custom 路由）的 true 是故意行为，
+        // 只在第三方分支归一化，official 永不命中。
+        let normalized_config;
+        let config_text = if category != Some("official") {
+            normalized_config = config_text
+                .map(normalize_codex_third_party_custom_provider_auth)
+                .transpose()?;
+            normalized_config.as_deref()
+        } else {
+            config_text
+        };
         write_codex_live_atomic(auth, config_text)
     } else {
         let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
@@ -2643,6 +2721,108 @@ base_url = "https://single.example.com/v1"
         assert!(
             err.to_string().contains("config.toml"),
             "error should explain missing config.toml, got: {err}"
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_disables_chatgpt_auth_for_custom_provider() {
+        // Codex 0.144+ treats `requires_openai_auth = true` as an explicit
+        // ChatGPT OAuth requirement: a stored third-party config carrying the
+        // legacy flag must be normalized when the bearer token is injected,
+        // or auth falls back to auth.openai.com and bypasses any local proxy.
+        let input = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|value| value.get("custom"))
+            .expect("custom provider");
+
+        assert_eq!(
+            provider
+                .get("experimental_bearer_token")
+                .and_then(|value| value.as_str()),
+            Some("sk-test")
+        );
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|value| value.as_bool()),
+            Some(false),
+            "Codex 0.144+ must not select ChatGPT auth for a third-party bearer token"
+        );
+    }
+
+    #[test]
+    fn normalize_third_party_custom_provider_auth_disables_chatgpt_auth() {
+        let input = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+
+        let output = normalize_codex_third_party_custom_provider_auth(input)
+            .expect("normalize third-party config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|value| value.get("custom"))
+            .expect("custom provider");
+
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|value| value.as_bool()),
+            Some(false),
+            "Codex 0.144+ must not select ChatGPT auth for a third-party provider"
+        );
+        assert_eq!(
+            provider.get("base_url").and_then(|value| value.as_str()),
+            Some("https://third-party.example/v1"),
+            "normalization must not touch unrelated provider fields"
+        );
+    }
+
+    #[test]
+    fn normalize_third_party_custom_provider_auth_leaves_other_shapes_alone() {
+        // Reserved provider id：由 Codex CLI 自己管理，不归一化
+        let reserved = "model_provider = \"openai\"\nrequires_openai_auth = true\n";
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth(reserved).expect("normalize"),
+            reserved
+        );
+
+        // 无 active model_provider：无可归一化的 provider 表
+        let no_provider = "[model_providers.custom]\nrequires_openai_auth = true\n";
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth(no_provider).expect("normalize"),
+            no_provider
+        );
+
+        // 自定义 provider 但未显式开启：保持缺省（Codex 默认 false）
+        let no_flag = "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://x.example/v1\"\n";
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth(no_flag).expect("normalize"),
+            no_flag
+        );
+
+        // 空配置原样返回
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth("").expect("normalize"),
+            ""
         );
     }
 
@@ -4293,6 +4473,44 @@ model = "glm-5"
             parsed.get("model_catalog_json").and_then(|v| v.as_str()),
             Some("/Users/me/.codex/my-custom-catalog.json"),
             "None arm should NOT remove user-owned catalog"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_catalog() {
+        // When CC Switch generates a catalog (Some arm), it must still respect a
+        // user-managed external catalog file instead of clobbering it with the
+        // cc-switch-owned filename. Only an absent or cc-switch-owned pointer is
+        // claimed; this mirrors the None arm's ownership rule.
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
+"#;
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("/Users/me/.codex/my-custom-catalog.json"),
+            "Some arm should NOT clobber a user-owned catalog (full path)"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_relative_filename() {
+        // A bare custom filename (no directory component) is also user-owned
+        // and must be preserved by the Some arm.
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+model_catalog_json = "my-custom-catalog.json"
+"#;
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("my-custom-catalog.json"),
+            "Some arm should NOT clobber a relative user-owned catalog"
         );
     }
 
