@@ -639,9 +639,14 @@ pub fn proxy_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>
 ///
 /// 聚合供应商不持有 `claudeDesktopModelRoutes`；其 Claude 四档路由
 /// （haiku/sonnet/opus/fable）各自映射到固定的 Claude-safe route id
-/// （复用 [`DEFAULT_PROXY_ROUTES`] 的 route_id / supports_1m），upstream
-/// 为档位路由的目标模型名。codex 专用 `custom` 路由在此不参与。
+/// （复用 [`DEFAULT_PROXY_ROUTES`] 的 route_id），upstream 为档位路由的目标
+/// 模型名。codex 专用 `custom` 路由在此不参与。
 /// 未配置任何 Claude 档位时返回 routes_missing 错误。
+///
+/// supports_1m 由档位模型名的 `[1M]` 标记决定（有标记才声明 1M，并从 upstream
+/// 模型名剥离），不能照搬 default_route 的 true：聚合的上游模型各异（如
+/// k3-256k 仅 256K），无脑声明 1M 会让客户端按 1M 上下文发请求，被上游
+/// 以 "supports only 256K context" 之类的错误拒绝。
 pub fn aggregate_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>, AppError> {
     let routes = provider.aggregate_routes().ok_or_else(|| {
         AppError::localized(
@@ -663,15 +668,20 @@ pub fn aggregate_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRo
         let Some(tier_route) = tier_route else {
             continue;
         };
-        let upstream_model = tier_route.model.trim();
+        let raw_model = tier_route.model.trim();
+        if raw_model.is_empty() {
+            continue;
+        }
+        let upstream_model =
+            crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(raw_model).to_string();
         if upstream_model.is_empty() {
             continue;
         }
         result.push(ResolvedModelRoute {
             route_id: default_route.route_id.to_string(),
-            upstream_model: upstream_model.to_string(),
+            supports_1m: upstream_model != raw_model,
+            upstream_model,
             label_override: None,
-            supports_1m: default_route.supports_1m,
         });
     }
 
@@ -697,6 +707,59 @@ pub fn resolve_proxy_routes(provider: &Provider) -> Result<Vec<ResolvedModelRout
     } else {
         proxy_model_routes(provider)
     }
+}
+
+/// 从 Claude Code 风格 env 配置投影出模型路由列表。
+///
+/// Claude Science 供应商没有 `claudeDesktopModelRoutes`（那是 Desktop 专属结构），
+/// 其模型映射就是 env 里的 `ANTHROPIC_DEFAULT_*_MODEL` / `ANTHROPIC_MODEL`。
+/// 这里把 env 四档投射到 [`DEFAULT_PROXY_ROUTES`] 的 Claude-safe route id 上，
+/// 供 `/claude-science/v1/models` 在路由表缺失时回退使用；未配置档回退到
+/// `ANTHROPIC_MODEL`（与消息映射 `ModelMapping::map_model` 的兜底方向一致）。
+/// `[1m]` 后缀按 Claude Code 语义解析为 supports1m 声明并从上游模型名剥离。
+pub fn env_model_routes(provider: &Provider) -> Result<Vec<ResolvedModelRoute>, AppError> {
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object);
+    let read = |key: &str| -> Option<String> {
+        env.and_then(|e| e.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let default_model = read("ANTHROPIC_MODEL");
+
+    let mut result = Vec::new();
+    for default_route in DEFAULT_PROXY_ROUTES {
+        let Some(raw) = read(default_route.env_key).or_else(|| default_model.clone()) else {
+            continue;
+        };
+        let upstream_model =
+            crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(&raw).to_string();
+        if upstream_model.is_empty() {
+            continue;
+        }
+        let supports_1m = upstream_model != raw;
+        let name_key = format!("{}_NAME", default_route.env_key);
+        result.push(ResolvedModelRoute {
+            route_id: default_route.route_id.to_string(),
+            label_override: read(&name_key).or_else(|| Some(upstream_model.clone())),
+            upstream_model,
+            supports_1m,
+        });
+    }
+
+    if result.is_empty() {
+        return Err(AppError::localized(
+            "claude_science.provider.models_missing",
+            "Claude Science 供应商缺少模型配置（ANTHROPIC_MODEL 或 ANTHROPIC_DEFAULT_*_MODEL）",
+            "Claude Science provider is missing model configuration (ANTHROPIC_MODEL or ANTHROPIC_DEFAULT_*_MODEL)",
+        ));
+    }
+
+    Ok(result)
 }
 
 fn next_catalog_safe_route_id(
@@ -727,6 +790,10 @@ fn next_catalog_safe_route_id(
 
 pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
     let routes = resolve_proxy_routes(provider)?;
+    Ok(model_list_response_from_routes(&routes))
+}
+
+pub fn model_list_response_from_routes(routes: &[ResolvedModelRoute]) -> Value {
     let data: Vec<Value> = routes
         .iter()
         .map(|route| {
@@ -771,12 +838,12 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    Ok(json!({
+    json!({
         "data": data,
         "has_more": false,
         "first_id": first_id,
         "last_id": last_id,
-    }))
+    })
 }
 
 pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<Value, AppError> {
@@ -1514,6 +1581,76 @@ mod tests {
         );
         provider.category = Some("official".to_string());
         provider
+    }
+
+    fn env_science_provider(settings: serde_json::Value) -> Provider {
+        Provider::with_id("science".to_string(), "Science".to_string(), settings, None)
+    }
+
+    #[test]
+    fn env_model_routes_projects_tiers_onto_default_route_ids() {
+        let provider = env_science_provider(json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "kimi-k2[1m]",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Kimi K2",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "kimi-k2-thinking",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "  ",
+            }
+        }));
+
+        let routes = env_model_routes(&provider).expect("env routes");
+        assert_eq!(routes.len(), 2);
+
+        let sonnet = &routes[0];
+        assert_eq!(sonnet.route_id, "claude-sonnet-5");
+        assert_eq!(sonnet.upstream_model, "kimi-k2");
+        assert_eq!(sonnet.label_override.as_deref(), Some("Kimi K2"));
+        assert!(sonnet.supports_1m);
+
+        let opus = &routes[1];
+        assert_eq!(opus.route_id, "claude-opus-5");
+        assert_eq!(opus.upstream_model, "kimi-k2-thinking");
+        // 无 NAME 键时回退为上游模型名
+        assert_eq!(opus.label_override.as_deref(), Some("kimi-k2-thinking"));
+        assert!(!opus.supports_1m);
+    }
+
+    #[test]
+    fn env_model_routes_falls_back_to_default_model() {
+        let provider = env_science_provider(json!({
+            "env": { "ANTHROPIC_MODEL": "gpt-5.6" }
+        }));
+
+        let routes = env_model_routes(&provider).expect("env routes");
+        assert_eq!(routes.len(), DEFAULT_PROXY_ROUTES.len());
+        assert!(routes.iter().all(|route| route.upstream_model == "gpt-5.6"));
+        // 会话里存的 claude-opus-5 必须在列表里，否则 Science UI 判 unavailable
+        assert!(routes.iter().any(|route| route.route_id == "claude-opus-5"));
+    }
+
+    #[test]
+    fn env_model_routes_errors_without_any_model_env() {
+        let provider = env_science_provider(json!({
+            "env": { "ANTHROPIC_BASE_URL": "https://example.com" }
+        }));
+        assert!(env_model_routes(&provider).is_err());
+    }
+
+    #[test]
+    fn model_list_response_from_routes_emits_display_name_and_1m() {
+        let routes = vec![ResolvedModelRoute {
+            route_id: "claude-opus-5".to_string(),
+            upstream_model: "kimi-k2".to_string(),
+            label_override: Some("Kimi K2".to_string()),
+            supports_1m: true,
+        }];
+        let response = model_list_response_from_routes(&routes);
+        let item = &response["data"][0];
+        assert_eq!(item["id"], json!("claude-opus-5"));
+        assert_eq!(item["display_name"], json!("Kimi K2"));
+        assert_eq!(item["labelOverride"], json!("Kimi K2"));
+        assert_eq!(item["supports1m"], json!(true));
+        assert_eq!(response["first_id"], json!("claude-opus-5"));
     }
 
     fn proxy_provider(id: &str) -> Provider {
@@ -2296,6 +2433,45 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_science_model_list_only_contains_configured_tiers() {
+        // 聚合供应商的 /models 列表只包含已配置档位（未配置的档请求也无法路由，
+        // 列出来只会让 Science 前端选一个必然失败的模型）。env 回退对聚合供应商
+        // 不生效：resolve_proxy_routes 已成功，不会走 env_model_routes。
+        use crate::provider::{AggregateRoute, AggregateRoutes};
+        let mut provider = Provider::with_id(
+            "agg".to_string(),
+            "Agg".to_string(),
+            json!({"env": {}}),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            aggregate_routes: Some(AggregateRoutes {
+                sonnet: Some(AggregateRoute {
+                    provider_id: "kimi".into(),
+                    model: "kimi-k2".into(),
+                }),
+                opus: Some(AggregateRoute {
+                    provider_id: "kimi".into(),
+                    model: "kimi-k2".into(),
+                }),
+                haiku: None,
+                fable: None,
+                custom: None,
+            }),
+            ..Default::default()
+        });
+        let routes = resolve_proxy_routes(&provider).expect("aggregate routes");
+        let resp = model_list_response_from_routes(&routes);
+        let ids: Vec<&str> = resp["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["claude-opus-5", "claude-sonnet-5"]);
+    }
+
+    #[test]
     fn claude_desktop_write_meta_recovers_non_object_meta_file() {
         let temp = TempDir::new().expect("tempdir");
         let paths = test_paths(temp.path());
@@ -2470,11 +2646,19 @@ mod tests {
         let models = profile["inferenceModels"]
             .as_array()
             .expect("inferenceModels array");
+        // 无 [1M] 标记的档不声明 1M，profile 中退化为纯字符串形式
         let model_ids: Vec<String> = models
             .iter()
-            .map(|item| item["name"].as_str().unwrap_or_default().to_string())
+            .map(|item| {
+                item["name"]
+                    .as_str()
+                    .or_else(|| item.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
             .collect();
         assert_eq!(model_ids, vec!["claude-sonnet-5"]);
+        assert_eq!(models[0], json!("claude-sonnet-5"));
     }
 
     #[test]
@@ -2485,7 +2669,9 @@ mod tests {
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].route_id, "claude-sonnet-5");
         assert_eq!(routes[0].upstream_model, "claude-sonnet-4-6");
-        assert!(routes[0].supports_1m);
+        // 无 [1M] 标记 → 不声明 1M：聚合的上游模型能力各异（如 k3-256k 仅 256K），
+        // 默认 true 会让客户端按 1M 上下文发请求被上游拒绝。
+        assert!(!routes[0].supports_1m);
 
         // 未配置任何 Claude 档位（纯 codex custom）→ 报 routes_missing
         let mut codex_only = Provider::with_id(
@@ -2509,6 +2695,49 @@ mod tests {
         });
         assert!(codex_only.is_aggregate());
         assert!(aggregate_model_routes(&codex_only).is_err());
+    }
+
+    #[test]
+    fn aggregate_model_routes_derives_supports_1m_from_marker() {
+        // 档位模型名带 [1M] 标记 → supports_1m = true 且标记从 upstream 剥离；
+        // 不带标记 → false（上游如 k3-256k 只有 256K，不能虚报 1M）。
+        let mut provider = Provider::with_id(
+            "agg-1m".into(),
+            "Agg1m".into(),
+            json!({}),
+            Some("https://example.com".to_string()),
+        );
+        provider.meta = Some(ProviderMeta {
+            aggregate_routes: Some(crate::provider::AggregateRoutes {
+                sonnet: Some(crate::provider::AggregateRoute {
+                    provider_id: "downstream".to_string(),
+                    model: "MiniMax-M3[1M]".to_string(),
+                }),
+                opus: Some(crate::provider::AggregateRoute {
+                    provider_id: "downstream".to_string(),
+                    model: "k3-256k".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let routes = aggregate_model_routes(&provider).expect("aggregate model routes");
+        assert_eq!(routes.len(), 2);
+
+        let opus = routes
+            .iter()
+            .find(|r| r.route_id == "claude-opus-5")
+            .expect("opus route");
+        assert_eq!(opus.upstream_model, "k3-256k");
+        assert!(!opus.supports_1m);
+
+        let sonnet = routes
+            .iter()
+            .find(|r| r.route_id == "claude-sonnet-5")
+            .expect("sonnet route");
+        assert_eq!(sonnet.upstream_model, "MiniMax-M3");
+        assert!(sonnet.supports_1m);
     }
 
     #[test]
@@ -2542,6 +2771,7 @@ mod tests {
         assert_eq!(data[0]["id"], json!("claude-sonnet-5"));
         assert_eq!(data[0]["name"], json!("claude-sonnet-5"));
         assert_eq!(data[0]["display_name"], json!("claude-sonnet-5"));
-        assert_eq!(data[0]["supports1m"], json!(true));
+        // 路由模型 "claude-sonnet-4-6" 无 [1M] 标记 → 不声明 supports1m
+        assert!(data[0].get("supports1m").is_none());
     }
 }

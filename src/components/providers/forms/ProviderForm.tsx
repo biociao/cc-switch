@@ -1041,6 +1041,10 @@ function ProviderFormFull({
   // Claude 配置区的查看模式：默认「表单」结构化选项；切换到「JSON」才显示原始 JSON 编辑器
   const [configViewMode, setConfigViewMode] = useState<"form" | "json">("form");
 
+  // Claude 与 Claude Science 共用 CommonConfigEditor 的结构化选项，都提供表单/JSON 切换
+  const showConfigViewModeTabs =
+    appId === "claude" || appId === "claude-science";
+
   const shouldApplyLocalProxyRequestOverrides =
     (appId === "claude" || appId === "codex") && category !== "official";
 
@@ -2215,7 +2219,8 @@ function ProviderFormFull({
             }
           />
 
-          {appId === "claude" && (
+          {/* claude 系应用（claude / claude-science；claude-desktop 在入口处分流，走不到这里） */}
+          {appId.startsWith("claude") && (
             <ClaudeFormFields
               providerId={providerId}
               shouldShowApiKey={
@@ -2608,7 +2613,7 @@ function ProviderFormFull({
             </>
           ) : (
             <>
-              {appId === "claude" && (
+              {showConfigViewModeTabs && (
                 <div className="space-y-2">
                   <Tabs
                     value={configViewMode}
@@ -2651,7 +2656,9 @@ function ProviderFormFull({
                 onModalClose={() => setIsCommonConfigModalOpen(false)}
                 onExtract={handleClaudeExtract}
                 isExtracting={isClaudeExtracting}
-                showJsonEditor={appId !== "claude" || configViewMode === "json"}
+                showJsonEditor={
+                  !showConfigViewModeTabs || configViewMode === "json"
+                }
               />
               {settingsConfigErrorField}
 
