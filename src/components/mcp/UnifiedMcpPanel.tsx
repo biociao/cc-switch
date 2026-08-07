@@ -179,8 +179,7 @@ const UnifiedMcpPanel = React.forwardRef<
     // use the complete collection too, even while a search filter is active.
     const serverIds = serverEntries
       .filter(
-        ([_, server]) =>
-          Boolean(server.apps[app as keyof McpApps]) !== enabled,
+        ([_, server]) => Boolean(server.apps[app as keyof McpApps]) !== enabled,
       )
       .map(([id]) => id);
     if (serverIds.length === 0) {

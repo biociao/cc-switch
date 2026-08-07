@@ -112,7 +112,6 @@ export function AppSwitcher({
     onSwitch(app);
   };
 
-
   // Filter apps based on visibility settings (default all visible)
   const appsToShow = ALL_APPS.filter((app) => {
     if (!visibleApps) return true;

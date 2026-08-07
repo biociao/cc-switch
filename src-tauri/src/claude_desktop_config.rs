@@ -1702,7 +1702,10 @@ mod tests {
 
     #[test]
     fn humanize_science_display_name_title_cases_machine_labels() {
-        assert_eq!(humanize_science_display_name("claude-opus-5"), "Claude Opus 5");
+        assert_eq!(
+            humanize_science_display_name("claude-opus-5"),
+            "Claude Opus 5"
+        );
         assert_eq!(
             humanize_science_display_name("deepseek-v4-pro-260425"),
             "Deepseek V4 Pro 260425"

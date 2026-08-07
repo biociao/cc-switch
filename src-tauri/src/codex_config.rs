@@ -2293,17 +2293,14 @@ fn restore_codex_requires_openai_auth_from_template(
         return Ok(live_config.to_string());
     }
 
-    let template_flag = template_config
-        .parse::<DocumentMut>()
-        .ok()
-        .and_then(|doc| {
-            doc.get("model_providers")
-                .and_then(|item| item.as_table())
-                .and_then(|table| table.get(provider_id.as_str()))
-                .and_then(|item| item.as_table())
-                .and_then(|table| table.get("requires_openai_auth"))
-                .and_then(|item| item.as_bool())
-        });
+    let template_flag = template_config.parse::<DocumentMut>().ok().and_then(|doc| {
+        doc.get("model_providers")
+            .and_then(|item| item.as_table())
+            .and_then(|table| table.get(provider_id.as_str()))
+            .and_then(|item| item.as_table())
+            .and_then(|table| table.get("requires_openai_auth"))
+            .and_then(|item| item.as_bool())
+    });
 
     let Some(provider_table) = live_doc
         .get_mut("model_providers")
