@@ -168,6 +168,8 @@ pub async fn handle_claude_science_messages(
 /// Claude Science 前端调用 `GET /claude-science/v1/models`（经
 /// ANTHROPIC_BASE_URL 代理）获取模型列表。与 `/claude-desktop/v1/models` 同形
 /// 式，但不发 gateway token（Science 二进制无此机制），故不校验 Authorization。
+/// display_name 走 Science 专用拟人化（`science_model_list_response_from_routes`）：
+/// daemon 会把全小写 kebab-case 的 display_name 当作内部 id 过滤掉。
 pub async fn handle_claude_science_models(
     State(state): State<ProxyState>,
 ) -> Result<Json<Value>, ProxyError> {
@@ -185,7 +187,7 @@ pub async fn handle_claude_science_models(
         .or_else(|_| crate::claude_desktop_config::env_model_routes(provider))
         .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
     Ok(Json(
-        crate::claude_desktop_config::model_list_response_from_routes(&routes),
+        crate::claude_desktop_config::science_model_list_response_from_routes(&routes),
     ))
 }
 

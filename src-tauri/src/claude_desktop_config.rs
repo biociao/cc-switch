@@ -846,6 +846,53 @@ pub fn model_list_response_from_routes(routes: &[ResolvedModelRoute]) -> Value {
     })
 }
 
+/// 把机器名形态的标签转为拟人化显示名：按 `-`/`_` 分段、每段首字母大写
+/// （数字/点号段保持原样），如 `claude-opus-5` → `Claude Opus 5`、
+/// `deepseek-v4-pro-260425` → `Deepseek V4 Pro 260425`。
+/// 已含大写字母或空格的标签（`Kimi K2.7`、`GPT-5.4`）视为已拟人化，原样返回——
+/// 避免把全大写缩写改成 `Gpt`。
+fn humanize_science_display_name(raw: &str) -> String {
+    if raw.chars().any(char::is_uppercase) || raw.contains(' ') {
+        return raw.to_string();
+    }
+    raw.split(['-', '_'])
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) if first.is_ascii_lowercase() => {
+                    first.to_ascii_uppercase().to_string() + chars.as_str()
+                }
+                _ => segment.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `/claude-science/v1/models` 专用响应：与 Desktop 同构，但 display_name
+/// 先经 `humanize_science_display_name` 拟人化。
+///
+/// 根因：Claude Science daemon（闭源）构建模型选择器时会过滤掉「机器名」
+/// 形态的 display_name（全小写 kebab-case 被判为内部 id 丢弃），而我们投影的
+/// display_name 恰是上游模型 id（`deepseek-v4-pro-260425`）或 route id
+/// （`claude-opus-5`），导致选择器列表为空、会话已存模型显示 unavailable。
+/// `id`/`name` 保持 route id 不变（daemon 按 id 匹配会话模型），只改
+/// `display_name`；`labelOverride` 与 display_name 同步拟人化，保持该函数
+/// 输出里两者恒等的既有约定（daemon 只读 display_name，labelOverride
+/// 仅供 cc-switch 自己的 live config 形状对齐）。
+pub fn science_model_list_response_from_routes(routes: &[ResolvedModelRoute]) -> Value {
+    let humanized: Vec<ResolvedModelRoute> = routes
+        .iter()
+        .map(|route| ResolvedModelRoute {
+            label_override: Some(humanize_science_display_name(
+                route.label_override.as_deref().unwrap_or(&route.route_id),
+            )),
+            ..route.clone()
+        })
+        .collect();
+    model_list_response_from_routes(&humanized)
+}
+
 pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<Value, AppError> {
     let requested_raw = body
         .get("model")
@@ -1651,6 +1698,72 @@ mod tests {
         assert_eq!(item["labelOverride"], json!("Kimi K2"));
         assert_eq!(item["supports1m"], json!(true));
         assert_eq!(response["first_id"], json!("claude-opus-5"));
+    }
+
+    #[test]
+    fn humanize_science_display_name_title_cases_machine_labels() {
+        assert_eq!(humanize_science_display_name("claude-opus-5"), "Claude Opus 5");
+        assert_eq!(
+            humanize_science_display_name("deepseek-v4-pro-260425"),
+            "Deepseek V4 Pro 260425"
+        );
+        assert_eq!(
+            humanize_science_display_name("ark-code-latest"),
+            "Ark Code Latest"
+        );
+        assert_eq!(
+            humanize_science_display_name("glm-5-2-260617"),
+            "Glm 5 2 260617"
+        );
+        // 已拟人化的标签原样保留：含空格或任何大写字母（GPT 不能变成 Gpt）
+        assert_eq!(humanize_science_display_name("Kimi K2.7"), "Kimi K2.7");
+        assert_eq!(humanize_science_display_name("GPT-5.4"), "GPT-5.4");
+    }
+
+    #[test]
+    fn science_model_list_response_humanizes_kebab_case_display_names() {
+        let routes = vec![
+            ResolvedModelRoute {
+                route_id: "claude-opus-5".to_string(),
+                upstream_model: "deepseek-v4-pro-260425".to_string(),
+                label_override: Some("deepseek-v4-pro-260425".to_string()),
+                supports_1m: false,
+            },
+            ResolvedModelRoute {
+                route_id: "claude-sonnet-5".to_string(),
+                upstream_model: "ark-code-latest".to_string(),
+                label_override: None,
+                supports_1m: false,
+            },
+        ];
+
+        let response = science_model_list_response_from_routes(&routes);
+        let first = &response["data"][0];
+        let second = &response["data"][1];
+        // daemon 按 id 匹配会话模型：id/name 必须保持 route id 不变
+        assert_eq!(first["id"], json!("claude-opus-5"));
+        assert_eq!(first["name"], json!("claude-opus-5"));
+        assert_eq!(
+            first["display_name"],
+            json!("Deepseek V4 Pro 260425"),
+            "kebab-case label_override must be humanized or the daemon filters it out"
+        );
+        assert_eq!(first["labelOverride"], json!("Deepseek V4 Pro 260425"));
+        assert_eq!(second["id"], json!("claude-sonnet-5"));
+        assert_eq!(
+            second["display_name"],
+            json!("Claude Sonnet 5"),
+            "route id fallback display_name must be humanized too"
+        );
+
+        // Desktop 路径没有 daemon 的 kebab-case 过滤，响应保持现状
+        let desktop = model_list_response_from_routes(&routes);
+        assert_eq!(
+            desktop["data"][0]["display_name"],
+            json!("deepseek-v4-pro-260425")
+        );
+        assert_eq!(desktop["data"][1]["display_name"], json!("claude-sonnet-5"));
+        assert!(desktop["data"][1].get("labelOverride").is_none());
     }
 
     fn proxy_provider(id: &str) -> Provider {
