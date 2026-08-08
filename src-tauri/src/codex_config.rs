@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    atomic_write, delete_file, get_home_dir, read_json_file, sanitize_provider_name,
-    write_json_file, write_text_file,
+    atomic_write, delete_file, get_home_dir, path_is_within, read_json_file,
+    sanitize_provider_name, write_json_file, write_text_file,
 };
 use crate::error::AppError;
 use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
@@ -1248,7 +1248,22 @@ fn set_codex_model_catalog_json_field(
 
     match catalog_path {
         Some(_) => {
-            doc["model_catalog_json"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            // Only claim the pointer when it is absent or already cc-switch-owned.
+            // A user-managed external catalog file (custom filename or path) is
+            // left untouched, mirroring the None arm's ownership rule that
+            // `resolve_cc_switch_catalog_path` relies on.
+            let is_cc_switch_owned = doc
+                .get("model_catalog_json")
+                .and_then(|item| item.as_str())
+                .map(|path| {
+                    Path::new(path).file_name().and_then(|name| name.to_str())
+                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                })
+                .unwrap_or(true);
+            if is_cc_switch_owned {
+                doc["model_catalog_json"] =
+                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            }
         }
         None => {
             let should_remove = doc
@@ -1359,17 +1374,28 @@ pub fn prepare_codex_config_text_with_model_catalog(
 /// All failure modes (missing file, parse error, no `model_catalog_json`,
 /// entries without `slug`) collapse to `Ok(None)` so callers can treat this
 /// as best-effort enrichment without making `read_live_settings` brittle.
+/// 模型目录文件读取上限（32 MiB）。目录 JSON 正常只有几百 KiB；超过则视为异常，
+/// 避免指向外部大文件时耗尽内存。
+const MAX_CODEX_CATALOG_BYTES: u64 = 32 * 1024 * 1024;
+
 pub fn read_codex_model_catalog_simplified_from_live() -> Result<Option<Value>, AppError> {
     let config_text = read_codex_config_text()?;
-    let generated_path = get_codex_model_catalog_path();
-    let Some(catalog_path) = resolve_cc_switch_catalog_path(&config_text, &generated_path) else {
+    let config_dir = get_codex_config_dir();
+    let Some(catalog_path) = resolve_cc_switch_catalog_path(&config_text, &config_dir) else {
         return Ok(None);
     };
     if !catalog_path.exists() {
         return Ok(None);
     }
-    let Ok(catalog_text) = fs::read_to_string(&catalog_path) else {
-        return Ok(None);
+    let catalog_text = match read_limited_string(&catalog_path, MAX_CODEX_CATALOG_BYTES) {
+        Ok(text) => text,
+        Err(error) => {
+            log::warn!(
+                "拒绝读取越界或过大的 Codex 模型目录 {}: {error}",
+                catalog_path.display()
+            );
+            return Ok(None);
+        }
     };
     Ok(build_simplified_catalog_from_texts(
         &config_text,
@@ -1377,12 +1403,31 @@ pub fn read_codex_model_catalog_simplified_from_live() -> Result<Option<Value>, 
     ))
 }
 
+/// 安全地读取文件为字符串，并在超过字节上限时返回错误。
+pub(crate) fn read_limited_string(path: &Path, max_bytes: u64) -> Result<String, AppError> {
+    let metadata = fs::metadata(path).map_err(|error| AppError::io(path, error))?;
+    if metadata.len() > max_bytes {
+        return Err(AppError::Config(format!(
+            "文件 {} 超过大小上限 {} 字节",
+            path.display(),
+            max_bytes
+        )));
+    }
+    fs::read_to_string(path).map_err(|error| AppError::io(path, error))
+}
+
+/// Read the cc-switch Codex model catalog file with a size cap.
+pub(crate) fn read_codex_model_catalog_text(path: &Path) -> Result<String, AppError> {
+    read_limited_string(path, MAX_CODEX_CATALOG_BYTES)
+}
+
 /// Given `config.toml` text, resolve the on-disk path of the cc-switch–owned
 /// catalog file (returns `None` if `model_catalog_json` is absent or points at
-/// a file we don't own). Relative paths fall back to `generated_path`.
+/// a file we don't own). Relative paths are resolved under `base_dir`;
+/// absolute paths must still be inside `base_dir`.
 pub(crate) fn resolve_cc_switch_catalog_path(
     config_text: &str,
-    generated_path: &Path,
+    base_dir: &Path,
 ) -> Option<PathBuf> {
     if config_text.trim().is_empty() {
         return None;
@@ -1401,11 +1446,59 @@ pub(crate) fn resolve_cc_switch_catalog_path(
         return None;
     }
 
-    if referenced_path.is_absolute() {
-        Some(referenced_path.to_path_buf())
+    // 注意（有意的行为变更）：Windows 上 `/…` 形式的旧 WSL 风格 Linux 路径也会
+    // 被视为绝对路径，从而在下方的包含性校验中失败——此前这类路径会因无法匹配
+    // 生成文件名而回退为按文件名解析、碰巧能工作。可接受：下一次切换供应商时
+    // 写入侧会重新落一个裸文件名，配置自愈（见
+    // `set_catalog_json_none_removes_cc_switch_owned_by_filename` 的场景注释）。
+    let is_unix_absolute = catalog_path_str.starts_with('/');
+    let resolved = if referenced_path.is_absolute() || is_unix_absolute {
+        referenced_path.to_path_buf()
     } else {
-        Some(generated_path.to_path_buf())
+        base_dir.join(referenced_path)
+    };
+
+    if !path_is_within(base_dir, &resolved) {
+        log::warn!(
+            "Codex model_catalog_json 指向配置目录外: {}（允许目录: {}）",
+            resolved.display(),
+            base_dir.display()
+        );
+        return None;
     }
+
+    // 词法包含不等于运行时包含：配置目录内的符号链接（如 ~/.codex/link ->
+    // /etc）能让 `link/cc-switch-model-catalog.json` 通过上面的检查，读取却
+    // 落到目录外。文件存在时把真实路径 canonicalize 出来再校验一次，并把
+    // canonical 路径返回给调用方——后续读取不再经过 symlink 组件。
+    if resolved.exists() {
+        let canonical = match fs::canonicalize(&resolved) {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!(
+                    "Codex model_catalog_json canonicalize 失败: {}: {error}",
+                    resolved.display()
+                );
+                return None;
+            }
+        };
+        // base 同样 canonicalize，保证两侧前缀一致（Windows \\?\、
+        // macOS /tmp -> /private/tmp）；base 失败时退回词法 base——
+        // 词法 base 与 canonical 路径比较只会误拒（退化为不读），不会误放。
+        let canonical_base = fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
+        if !path_is_within(&canonical_base, &canonical) {
+            log::warn!(
+                "Codex model_catalog_json 经符号链接解析到配置目录外: {} -> {}（允许目录: {}）",
+                resolved.display(),
+                canonical.display(),
+                canonical_base.display()
+            );
+            return None;
+        }
+        return Some(canonical);
+    }
+
+    Some(resolved)
 }
 
 /// Pure reverse-parsing core: convert Codex catalog JSON text back into the
@@ -1599,11 +1692,61 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
             .and_then(|item| item.as_table_mut())
         {
             provider_table["experimental_bearer_token"] = toml_edit::value(token);
+            // Codex 0.144+ treats `requires_openai_auth = true` as an explicit
+            // request for ChatGPT OAuth (bypassing the bearer token and any
+            // local proxy), so a third-party custom provider must opt out.
+            provider_table["requires_openai_auth"] = toml_edit::value(false);
             return Ok(doc.to_string());
         }
     }
 
     doc["experimental_bearer_token"] = toml_edit::value(token);
+    Ok(doc.to_string())
+}
+
+/// Normalize a third-party live config so Codex 0.144+ does not force ChatGPT
+/// OAuth: legacy stored configs may still carry `requires_openai_auth = true`,
+/// which Codex now treats as an explicit ChatGPT OAuth requirement — auth then
+/// goes to auth.openai.com directly, bypassing the provider's bearer token and
+/// any local proxy (#4393).
+///
+/// Only the active **custom** model provider table is touched; reserved
+/// provider IDs (owned by the Codex CLI), missing provider tables, and configs
+/// without the flag are returned unchanged. Official providers must never be
+/// routed through this function — their `requires_openai_auth = true` under the
+/// shared custom id is deliberate (see `codex_official_provider_table`).
+pub fn normalize_codex_third_party_custom_provider_auth(
+    config_text: &str,
+) -> Result<String, AppError> {
+    if config_text.trim().is_empty() || !config_text.contains("requires_openai_auth") {
+        return Ok(config_text.to_string());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let Some(provider_id) = active_codex_model_provider_id(&doc) else {
+        return Ok(doc.to_string());
+    };
+    if !is_custom_codex_model_provider_id(&provider_id) {
+        return Ok(doc.to_string());
+    }
+
+    if let Some(provider_table) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|table| table.get_mut(provider_id.as_str()))
+        .and_then(|item| item.as_table_mut())
+    {
+        if provider_table
+            .get("requires_openai_auth")
+            .and_then(|item| item.as_bool())
+            == Some(true)
+        {
+            provider_table["requires_openai_auth"] = toml_edit::value(false);
+        }
+    }
     Ok(doc.to_string())
 }
 
@@ -2036,6 +2179,19 @@ pub fn write_codex_live_for_provider(
             && !crate::settings::preserve_codex_official_auth_on_switch());
 
     if should_write_auth {
+        // 存量第三方配置可能残留 `requires_openai_auth = true`，逐字写会把它带进
+        // live config.toml，Codex 0.144+ 随之强制 ChatGPT OAuth（#4393），逐字写前
+        // 先归一化。官方通道（含统一会话注入的 custom 路由）的 true 是故意行为，
+        // 只在第三方分支归一化，official 永不命中。
+        let normalized_config;
+        let config_text = if category != Some("official") {
+            normalized_config = config_text
+                .map(normalize_codex_third_party_custom_provider_auth)
+                .transpose()?;
+            normalized_config.as_deref()
+        } else {
+            config_text
+        };
         write_codex_live_atomic(auth, config_text)
     } else {
         let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
@@ -2085,7 +2241,17 @@ pub fn restore_codex_provider_token_for_backfill(
         return Ok(());
     };
 
+    // Strip live-only projection state that prepare_codex_provider_live_config
+    // may have written: the bearer token itself, and the requires_openai_auth =
+    // false flip that keeps Codex 0.144+ from selecting preserved ChatGPT auth.
     let cleaned_config = remove_codex_experimental_bearer_token(&config_text)?;
+    let cleaned_config = restore_codex_requires_openai_auth_from_template(
+        &cleaned_config,
+        template_settings
+            .get("config")
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+    )?;
 
     if let Some(obj) = settings.as_object_mut() {
         obj.insert("config".to_string(), Value::String(cleaned_config));
@@ -2102,6 +2268,59 @@ pub fn restore_codex_provider_token_for_backfill(
     }
 
     Ok(())
+}
+
+/// Restore `requires_openai_auth` on the active provider table from the stored
+/// template, undoing the live-only `false` written alongside a projected bearer
+/// token. If the template has no explicit value, drop the live-projected flag
+/// so stored provider config does not keep a synthetic default.
+fn restore_codex_requires_openai_auth_from_template(
+    live_config: &str,
+    template_config: &str,
+) -> Result<String, AppError> {
+    if live_config.trim().is_empty() {
+        return Ok(live_config.to_string());
+    }
+
+    let mut live_doc = live_config
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let Some(provider_id) = active_codex_model_provider_id(&live_doc) else {
+        return Ok(live_config.to_string());
+    };
+    if !is_custom_codex_model_provider_id(&provider_id) {
+        return Ok(live_config.to_string());
+    }
+
+    let template_flag = template_config.parse::<DocumentMut>().ok().and_then(|doc| {
+        doc.get("model_providers")
+            .and_then(|item| item.as_table())
+            .and_then(|table| table.get(provider_id.as_str()))
+            .and_then(|item| item.as_table())
+            .and_then(|table| table.get("requires_openai_auth"))
+            .and_then(|item| item.as_bool())
+    });
+
+    let Some(provider_table) = live_doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|table| table.get_mut(provider_id.as_str()))
+        .and_then(|item| item.as_table_mut())
+    else {
+        return Ok(live_config.to_string());
+    };
+
+    match template_flag {
+        Some(flag) => {
+            provider_table["requires_openai_auth"] = toml_edit::value(flag);
+        }
+        None => {
+            provider_table.remove("requires_openai_auth");
+        }
+    }
+
+    Ok(live_doc.to_string())
 }
 
 pub fn restore_codex_settings_for_backfill(
@@ -2569,6 +2788,108 @@ base_url = "https://single.example.com/v1"
     }
 
     #[test]
+    fn prepare_provider_live_config_disables_chatgpt_auth_for_custom_provider() {
+        // Codex 0.144+ treats `requires_openai_auth = true` as an explicit
+        // ChatGPT OAuth requirement: a stored third-party config carrying the
+        // legacy flag must be normalized when the bearer token is injected,
+        // or auth falls back to auth.openai.com and bypasses any local proxy.
+        let input = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+
+        let output =
+            prepare_codex_provider_live_config(&json!({"OPENAI_API_KEY": "sk-test"}), input)
+                .expect("prepare live config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|value| value.get("custom"))
+            .expect("custom provider");
+
+        assert_eq!(
+            provider
+                .get("experimental_bearer_token")
+                .and_then(|value| value.as_str()),
+            Some("sk-test")
+        );
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|value| value.as_bool()),
+            Some(false),
+            "Codex 0.144+ must not select ChatGPT auth for a third-party bearer token"
+        );
+    }
+
+    #[test]
+    fn normalize_third_party_custom_provider_auth_disables_chatgpt_auth() {
+        let input = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+
+        let output = normalize_codex_third_party_custom_provider_auth(input)
+            .expect("normalize third-party config");
+        let parsed: toml::Value = toml::from_str(&output).expect("parse output");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|value| value.get("custom"))
+            .expect("custom provider");
+
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|value| value.as_bool()),
+            Some(false),
+            "Codex 0.144+ must not select ChatGPT auth for a third-party provider"
+        );
+        assert_eq!(
+            provider.get("base_url").and_then(|value| value.as_str()),
+            Some("https://third-party.example/v1"),
+            "normalization must not touch unrelated provider fields"
+        );
+    }
+
+    #[test]
+    fn normalize_third_party_custom_provider_auth_leaves_other_shapes_alone() {
+        // Reserved provider id：由 Codex CLI 自己管理，不归一化
+        let reserved = "model_provider = \"openai\"\nrequires_openai_auth = true\n";
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth(reserved).expect("normalize"),
+            reserved
+        );
+
+        // 无 active model_provider：无可归一化的 provider 表
+        let no_provider = "[model_providers.custom]\nrequires_openai_auth = true\n";
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth(no_provider).expect("normalize"),
+            no_provider
+        );
+
+        // 自定义 provider 但未显式开启：保持缺省（Codex 默认 false）
+        let no_flag = "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://x.example/v1\"\n";
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth(no_flag).expect("normalize"),
+            no_flag
+        );
+
+        // 空配置原样返回
+        assert_eq!(
+            normalize_codex_third_party_custom_provider_auth("").expect("normalize"),
+            ""
+        );
+    }
+
+    #[test]
     fn prepare_provider_live_config_uses_top_level_token_for_reserved_provider() {
         let input = r#"model_provider = "openai"
 model = "gpt-5"
@@ -2603,6 +2924,64 @@ experimental_bearer_token = "stale-table-key"
         assert_eq!(
             extract_codex_experimental_bearer_token(input).as_deref(),
             Some("top-level-key")
+        );
+    }
+
+    #[test]
+    fn restore_provider_token_restores_requires_openai_auth_from_template() {
+        let mut settings = json!({
+            "auth": {
+                "OPENAI_API_KEY": null,
+                "tokens": {"access_token": "oauth"}
+            },
+            "config": r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "sk-live"
+"#
+        });
+        let template = json!({
+            "auth": {"OPENAI_API_KEY": "sk-stored"},
+            "config": r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        });
+
+        restore_codex_provider_token_for_backfill(&mut settings, &template)
+            .expect("restore provider token");
+
+        assert_eq!(
+            settings
+                .pointer("/auth/OPENAI_API_KEY")
+                .and_then(|v| v.as_str()),
+            Some("sk-live")
+        );
+        let restored_config = settings
+            .get("config")
+            .and_then(|v| v.as_str())
+            .expect("config string");
+        assert!(
+            !restored_config.contains("experimental_bearer_token"),
+            "live bearer token must not leak into stored provider config"
+        );
+        let parsed: toml::Value = toml::from_str(restored_config).expect("parse restored config");
+        assert_eq!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("custom"))
+                .and_then(|v| v.get("requires_openai_auth"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "stored template requires_openai_auth must survive live projection backfill"
         );
     }
 
@@ -3851,30 +4230,30 @@ web_search = "disabled"
 
     #[test]
     fn resolve_catalog_path_returns_none_when_config_missing_field() {
-        let generated = PathBuf::from("/tmp/.codex/cc-switch-model-catalog.json");
-        assert!(resolve_cc_switch_catalog_path("", &generated).is_none());
+        let base = PathBuf::from("/tmp/.codex");
+        assert!(resolve_cc_switch_catalog_path("", &base).is_none());
         assert!(
-            resolve_cc_switch_catalog_path("model = \"gpt-5\"", &generated).is_none(),
+            resolve_cc_switch_catalog_path("model = \"gpt-5\"", &base).is_none(),
             "no model_catalog_json field should yield None"
         );
     }
 
     #[test]
     fn resolve_catalog_path_accepts_cc_switch_owned_file() {
-        let generated = PathBuf::from("/tmp/.codex/cc-switch-model-catalog.json");
+        let base = PathBuf::from("/tmp/.codex");
         let config = r#"model_catalog_json = "/tmp/.codex/cc-switch-model-catalog.json"
 "#;
-        let resolved = resolve_cc_switch_catalog_path(config, &generated).expect("path resolves");
-        assert_eq!(resolved, generated);
+        let resolved = resolve_cc_switch_catalog_path(config, &base).expect("path resolves");
+        assert_eq!(resolved, base.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME));
     }
 
     #[test]
     fn resolve_catalog_path_rejects_user_owned_external_file() {
-        let generated = PathBuf::from("/tmp/.codex/cc-switch-model-catalog.json");
+        let base = PathBuf::from("/tmp/.codex");
         let config = r#"model_catalog_json = "/Users/me/.codex/my-handwritten-catalog.json"
 "#;
         assert!(
-            resolve_cc_switch_catalog_path(config, &generated).is_none(),
+            resolve_cc_switch_catalog_path(config, &base).is_none(),
             "external catalog files should be left alone"
         );
     }
@@ -4219,40 +4598,151 @@ model = "glm-5"
     }
 
     #[test]
+    fn set_catalog_json_some_preserves_user_owned_catalog() {
+        // When CC Switch generates a catalog (Some arm), it must still respect a
+        // user-managed external catalog file instead of clobbering it with the
+        // cc-switch-owned filename. Only an absent or cc-switch-owned pointer is
+        // claimed; this mirrors the None arm's ownership rule.
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
+"#;
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("/Users/me/.codex/my-custom-catalog.json"),
+            "Some arm should NOT clobber a user-owned catalog (full path)"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_relative_filename() {
+        // A bare custom filename (no directory component) is also user-owned
+        // and must be preserved by the Some arm.
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+model_catalog_json = "my-custom-catalog.json"
+"#;
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("my-custom-catalog.json"),
+            "Some arm should NOT clobber a relative user-owned catalog"
+        );
+    }
+
+    #[test]
     fn resolve_catalog_finds_relative_filename() {
         let config_text = r#"model_provider = "custom"
 model_catalog_json = "cc-switch-model-catalog.json"
 "#;
-        let generated_path = PathBuf::from("/home/user/.codex/cc-switch-model-catalog.json");
-        let result = resolve_cc_switch_catalog_path(config_text, &generated_path);
+        let base_dir = PathBuf::from("/home/user/.codex");
+        let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
             result,
-            Some(generated_path),
-            "relative filename should resolve to generated_path for file I/O"
+            Some(base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            "relative filename should resolve under base_dir for file I/O"
         );
     }
 
     #[test]
-    fn resolve_catalog_ignores_user_owned_relative() {
-        let config_text = r#"model_catalog_json = "my-custom-catalog.json"
+    fn resolve_catalog_rejects_absolute_path_outside_config_dir() {
+        let config_text = r#"model_catalog_json = "/tmp/secret/cc-switch-model-catalog.json"
 "#;
-        let generated_path = PathBuf::from("/home/user/.codex/cc-switch-model-catalog.json");
-        let result = resolve_cc_switch_catalog_path(config_text, &generated_path);
+        let base_dir = PathBuf::from("/home/user/.codex");
+        let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
             result, None,
-            "user-owned catalog should not be claimed by cc-switch"
+            "absolute path outside ~/.codex must not be accepted"
         );
     }
 
     #[test]
-    fn set_catalog_json_none_removes_relative_path() {
-        let input = r#"model_catalog_json = "cc-switch-model-catalog.json"
+    fn resolve_catalog_accepts_absolute_path_inside_config_dir() {
+        let config_text = r#"model_catalog_json = "/home/user/.codex/cc-switch-model-catalog.json"
 "#;
-        let result = set_codex_model_catalog_json_field(input, None).unwrap();
-        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        let base_dir = PathBuf::from("/home/user/.codex");
+        let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
+        assert_eq!(
+            result,
+            Some(base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            "absolute path inside ~/.codex should be accepted"
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_rejects_traversal_to_parent_directory() {
+        let config_text = r#"model_catalog_json = "../cc-switch-model-catalog.json"
+"#;
+        let base_dir = PathBuf::from("/home/user/.codex");
+        let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
+        assert_eq!(
+            result, None,
+            "relative traversal outside ~/.codex must not be accepted"
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_rejects_symlink_escaping_config_dir() {
+        // 词法包含可被符号链接绕过：~/.codex/link -> 外部目录，
+        // "link/cc-switch-model-catalog.json" 词法上在 base 内，真实读取却落到
+        // base 外。canonicalize 之后的二次校验必须拒绝。
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp.path().join("codex");
+        let outside_dir = temp.path().join("outside");
+        fs::create_dir_all(&base_dir).expect("create base");
+        fs::create_dir_all(&outside_dir).expect("create outside");
+        let escaped_file = outside_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        fs::write(&escaped_file, r#"{"models":[]}"#).expect("write escaped catalog");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_dir, base_dir.join("link")).expect("symlink");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside_dir, base_dir.join("link")).expect("symlink");
+
+        let config_text = r#"model_catalog_json = "link/cc-switch-model-catalog.json"
+"#;
+        let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
+        assert_eq!(
+            result, None,
+            "symlink escaping the config dir must be rejected after canonicalization"
+        );
+    }
+
+    #[test]
+    fn resolve_catalog_accepts_real_file_inside_config_dir() {
+        // 存在于 base 内的真实文件：canonical 校验通过后仍应接受
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp.path().join("codex");
+        fs::create_dir_all(&base_dir).expect("create base");
+        let catalog_file = base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        fs::write(&catalog_file, r#"{"models":[]}"#).expect("write catalog");
+
+        let config_text = r#"model_catalog_json = "cc-switch-model-catalog.json"
+"#;
+        let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
+        let resolved = result.expect("real file inside config dir should be accepted");
+        assert_eq!(
+            resolved.file_name().and_then(|n| n.to_str()),
+            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+        );
+    }
+
+    #[test]
+    fn read_limited_string_rejects_oversized_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("huge.json");
+        let file = std::fs::File::create(&path).expect("create");
+        file.set_len(MAX_CODEX_CATALOG_BYTES + 1).expect("set_len");
+
+        let result = read_limited_string(&path, MAX_CODEX_CATALOG_BYTES);
         assert!(
-            parsed.get("model_catalog_json").is_none(),
-            "None arm should remove relative cc-switch-owned field"
+            result.is_err(),
+            "file larger than MAX_CODEX_CATALOG_BYTES must be rejected"
         );
     }
 }

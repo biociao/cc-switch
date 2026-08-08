@@ -14,4 +14,18 @@ describe("Codex custom templates", () => {
     expect(parsed.features?.goals).toBeUndefined();
     expect(parsed.model_providers?.custom).toBeDefined();
   });
+
+  it("does not force ChatGPT OAuth on the third-party custom provider", () => {
+    // Codex 0.144+ treats `requires_openai_auth = true` as an explicit
+    // ChatGPT OAuth requirement, which hijacks third-party API-key auth.
+    const template = getCodexCustomTemplate();
+    const parsed = parseToml(template.config) as {
+      model_providers?: { custom?: { requires_openai_auth?: boolean } };
+    };
+
+    expect(
+      parsed.model_providers?.custom?.requires_openai_auth,
+    ).toBeUndefined();
+    expect(template.config).not.toContain("requires_openai_auth");
+  });
 });

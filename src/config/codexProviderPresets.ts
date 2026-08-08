@@ -72,8 +72,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = ${tomlString(providerName)}
 base_url = ${tomlString(baseUrl)}
-wire_api = "responses"
-requires_openai_auth = true`;
+wire_api = "responses"`;
 }
 
 function modelCatalog(
@@ -159,6 +158,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
       outputFormat: "reasoning_content",
     },
     category: "cn_official",
+    partnerPromotionKey: "kimi",
     icon: "kimi",
     iconColor: "#6366F1",
   },
@@ -246,8 +246,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = "APINebula"
 base_url = "https://apinebula.ai/v1"
-wire_api = "responses"
-requires_openai_auth = true`,
+wire_api = "responses"`,
     endpointCandidates: ["https://apinebula.ai/v1"],
     apiFormat: "openai_responses",
     isPartner: true,
@@ -354,6 +353,26 @@ requires_openai_auth = true`,
     iconColor: "#5B7FFF",
   },
   {
+    name: "Qiniu",
+    nameKey: "providerForm.presets.qiniu",
+    websiteUrl: "https://s.qiniu.com/nMvAvy",
+    apiKeyUrl: "https://s.qiniu.com/nMvAvy",
+    category: "aggregator",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "qiniu",
+      "https://api.qnaigc.com/bypass/openai/v1",
+      "gpt-5.6-sol",
+    ),
+    endpointCandidates: [
+      "https://api.qnaigc.com/bypass/openai/v1",
+      "https://api.modelink.ai/bypass/openai/v1",
+    ],
+    isPartner: true,
+    partnerPromotionKey: "qiniu",
+    icon: "qiniu",
+  },
+  {
     name: "AICoding",
     websiteUrl: "https://aicoding.inc",
     apiKeyUrl: "https://aicoding.inc/i/CCSWITCH",
@@ -400,8 +419,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = "APIKEY.FUN"
 base_url = "https://api.apikey.fun/v1"
-wire_api = "responses"
-requires_openai_auth = true`,
+wire_api = "responses"`,
     endpointCandidates: [
       "https://api.apikey.fun/v1",
       "https://slb.apikey.fun/v1",
@@ -602,22 +620,6 @@ requires_openai_auth = true`,
     iconColor: "#000000",
   },
   {
-    name: "NekoCode",
-    websiteUrl: "https://nekocode.ai",
-    apiKeyUrl: "https://nekocode.ai?aff=CCSWITCH",
-    category: "aggregator",
-    auth: generateThirdPartyAuth(""),
-    config: generateThirdPartyConfig(
-      "nekocode",
-      "https://nekocode.ai/v1",
-      "gpt-5.6-sol",
-    ),
-    endpointCandidates: ["https://nekocode.ai/v1"],
-    isPartner: true,
-    partnerPromotionKey: "nekocode",
-    icon: "nekocode",
-  },
-  {
     name: "A6API",
     websiteUrl: "https://www.a6api.com",
     apiKeyUrl: "https://a6api.com/register?aff=AqNr",
@@ -646,8 +648,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = "AtlasCloud"
 base_url = "https://api.atlascloud.ai/v1"
-wire_api = "responses"
-requires_openai_auth = true`,
+wire_api = "responses"`,
     endpointCandidates: ["https://api.atlascloud.ai/v1"],
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
@@ -839,26 +840,6 @@ requires_openai_auth = true`,
     partnerPromotionKey: "dmxapi", // 促销信息 i18n key
   },
   {
-    name: "Qiniu",
-    nameKey: "providerForm.presets.qiniu",
-    websiteUrl: "https://s.qiniu.com/nMvAvy",
-    apiKeyUrl: "https://s.qiniu.com/nMvAvy",
-    category: "aggregator",
-    auth: generateThirdPartyAuth(""),
-    config: generateThirdPartyConfig(
-      "qiniu",
-      "https://api.qnaigc.com/bypass/openai/v1",
-      "gpt-5.6-sol",
-    ),
-    endpointCandidates: [
-      "https://api.qnaigc.com/bypass/openai/v1",
-      "https://api.modelink.ai/bypass/openai/v1",
-    ],
-    isPartner: true,
-    partnerPromotionKey: "qiniu",
-    icon: "qiniu",
-  },
-  {
     name: "SudoCode.chat",
     websiteUrl: "https://sudocode.chat",
     apiKeyUrl:
@@ -874,8 +855,7 @@ disable_response_storage = true
 [model_providers.custom]
 name = "SudoCode"
 base_url = "https://api.sudocode.chat/v1"
-wire_api = "responses"
-requires_openai_auth = true`,
+wire_api = "responses"`,
     endpointCandidates: ["https://api.sudocode.chat/v1"],
     apiFormat: "openai_responses",
     isPartner: true,
@@ -898,8 +878,7 @@ model_verbosity = "high"
 [model_providers.custom]
 name = "sudocode"
 base_url = "https://sudocode.us/v1"
-wire_api = "responses"
-requires_openai_auth = true`,
+wire_api = "responses"`,
     endpointCandidates: ["https://sudocode.us/v1", "https://sudocode.run/v1"],
     apiFormat: "openai_responses",
     isPartner: true,
@@ -937,8 +916,7 @@ name = "Azure OpenAI"
 base_url = "https://YOUR_RESOURCE_NAME.openai.azure.com/openai"
 env_key = "OPENAI_API_KEY"
 query_params = { "api-version" = "2025-04-01-preview" }
-wire_api = "responses"
-requires_openai_auth = true`,
+wire_api = "responses"`,
     endpointCandidates: ["https://YOUR_RESOURCE_NAME.openai.azure.com/openai"],
     theme: {
       icon: "codex",
@@ -1615,7 +1593,6 @@ personality = "pragmatic"
 name = "E-FlowCode"
 base_url = "https://e-flowcode.cc/v1"
 wire_api = "responses"
-requires_openai_auth = true
 model_context_window = 1000000
 model_auto_compact_token_limit = 9000000`,
     category: "third_party",
@@ -1638,7 +1615,6 @@ disable_response_storage = true
 [model_providers.custom]
 name = "PIPELLM"
 wire_api = "responses"
-requires_openai_auth = true
 base_url = "https://cc-api.pipellm.ai/v1"`,
     category: "aggregator",
     endpointCandidates: ["https://cc-api.pipellm.ai/v1"],

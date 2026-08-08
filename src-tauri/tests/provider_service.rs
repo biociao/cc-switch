@@ -486,7 +486,8 @@ requires_openai_auth = true
             .and_then(|v| v.get("aihubmix"))
             .and_then(|v| v.get("requires_openai_auth"))
             .and_then(|v| v.as_bool()),
-        Some(true)
+        Some(false),
+        "Codex 0.144+ must not select ChatGPT auth for a third-party bearer token"
     );
 
     ProviderService::switch(&state, AppType::Codex, "plain-provider")
@@ -522,6 +523,22 @@ requires_openai_auth = true
             .unwrap_or_default()
             .contains("experimental_bearer_token"),
         "stored provider config should stay clean; bridge token is generated only for live config"
+    );
+    let stored_bridge_config = stored_bridge
+        .settings_config
+        .get("config")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let parsed_stored: toml::Value =
+        toml::from_str(stored_bridge_config).expect("parse stored bridge config");
+    assert_eq!(
+        parsed_stored
+            .get("model_providers")
+            .and_then(|v| v.get("aihubmix"))
+            .and_then(|v| v.get("requires_openai_auth"))
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "backfill must restore template requires_openai_auth, not keep live-projected false"
     );
 }
 
@@ -791,6 +808,22 @@ requires_openai_auth = true
     assert!(
         auth_value.pointer("/tokens/access_token").is_none(),
         "default switch must clear the official ChatGPT OAuth token from live auth.json"
+    );
+
+    // The verbatim write path must still normalize the legacy flag from the
+    // stored config, or Codex 0.144+ forces ChatGPT OAuth for the third-party
+    // provider (#4393).
+    let live_config =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let parsed_live: toml::Value = toml::from_str(&live_config).expect("parse live config");
+    assert_eq!(
+        parsed_live
+            .get("model_providers")
+            .and_then(|v| v.get("aihubmix"))
+            .and_then(|v| v.get("requires_openai_auth"))
+            .and_then(|v| v.as_bool()),
+        Some(false),
+        "third-party live config must not keep requires_openai_auth = true"
     );
 }
 

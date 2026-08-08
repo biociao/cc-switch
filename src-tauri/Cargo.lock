@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "cc-switch"
-version = "3.19.1+ciao.6"
+version = "3.19.2+ciao.7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -809,6 +809,7 @@ dependencies = [
  "indexmap 2.13.0",
  "json-five",
  "json5",
+ "libc",
  "log",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",

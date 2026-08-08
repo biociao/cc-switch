@@ -82,10 +82,10 @@ pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxySta
 /// cc-switch–owned `model_catalog_json`, using the same path ownership rules as
 /// Codex live-setting import.
 pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
-    let generated_path = crate::codex_config::get_codex_model_catalog_path();
+    let config_dir = crate::codex_config::get_codex_config_dir();
     let active_catalog_path = match crate::codex_config::read_codex_config_text() {
         Ok(config_text) => {
-            crate::codex_config::resolve_cc_switch_catalog_path(&config_text, &generated_path)
+            crate::codex_config::resolve_cc_switch_catalog_path(&config_text, &config_dir)
         }
         Err(_) => None,
     };
@@ -93,8 +93,13 @@ pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
     let catalog = if let Some(catalog_path) =
         active_catalog_path.as_ref().filter(|path| path.exists())
     {
-        let text = std::fs::read_to_string(catalog_path).unwrap_or_default();
-        serde_json::from_str(&text).unwrap_or(json!({"models": []}))
+        match crate::codex_config::read_codex_model_catalog_text(catalog_path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or(json!({"models": []})),
+            Err(error) => {
+                log::warn!("[models] 拒绝读取越界或过大的目录文件: {error}");
+                json!({"models": []})
+            }
+        }
     } else {
         if active_catalog_path.is_none() {
             log::debug!(
@@ -163,6 +168,8 @@ pub async fn handle_claude_science_messages(
 /// Claude Science 前端调用 `GET /claude-science/v1/models`（经
 /// ANTHROPIC_BASE_URL 代理）获取模型列表。与 `/claude-desktop/v1/models` 同形
 /// 式，但不发 gateway token（Science 二进制无此机制），故不校验 Authorization。
+/// display_name 走 Science 专用拟人化（`science_model_list_response_from_routes`）：
+/// daemon 会把全小写 kebab-case 的 display_name 当作内部 id 过滤掉。
 pub async fn handle_claude_science_models(
     State(state): State<ProxyState>,
 ) -> Result<Json<Value>, ProxyError> {
@@ -172,9 +179,16 @@ pub async fn handle_claude_science_models(
         .await
         .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
     let provider = providers.first().ok_or(ProxyError::NoAvailableProvider)?;
-    let response = crate::claude_desktop_config::model_list_response(provider)
+    // Claude Science 供应商通常只有 Claude Code 风格 env 模型配置，没有
+    // Desktop 的 claudeDesktopModelRoutes 路由表；路由解析失败时回退到
+    // env 投影，否则 Science 前端拿不到模型列表，会把会话已存模型（如
+    // claude-opus-5）标记为 unavailable 并中断会话。
+    let routes = crate::claude_desktop_config::resolve_proxy_routes(provider)
+        .or_else(|_| crate::claude_desktop_config::env_model_routes(provider))
         .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
-    Ok(Json(response))
+    Ok(Json(
+        crate::claude_desktop_config::science_model_list_response_from_routes(&routes),
+    ))
 }
 
 pub async fn handle_claude_desktop_models(
@@ -2094,7 +2108,8 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         | ProxyError::NotRunning
         | ProxyError::BindFailed(_)
         | ProxyError::StopTimeout
-        | ProxyError::StopFailed(_) => "cc_switch_proxy_error",
+        | ProxyError::StopFailed(_)
+        | ProxyError::ResponseBodyTooLarge(_) => "cc_switch_proxy_error",
     }
 }
 

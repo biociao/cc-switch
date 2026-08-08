@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Form, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { providerSchema, type ProviderFormData } from "@/lib/schemas/provider";
 import {
   buildLocalProxyRequestOverrides,
@@ -1036,6 +1037,13 @@ function ProviderFormFull({
   ]);
 
   const [isCommonConfigModalOpen, setIsCommonConfigModalOpen] = useState(false);
+
+  // Claude 配置区的查看模式：默认「表单」结构化选项；切换到「JSON」才显示原始 JSON 编辑器
+  const [configViewMode, setConfigViewMode] = useState<"form" | "json">("form");
+
+  // Claude 与 Claude Science 共用 CommonConfigEditor 的结构化选项，都提供表单/JSON 切换
+  const showConfigViewModeTabs =
+    appId === "claude" || appId === "claude-science";
 
   const shouldApplyLocalProxyRequestOverrides =
     (appId === "claude" || appId === "codex") && category !== "official";
@@ -2211,7 +2219,8 @@ function ProviderFormFull({
             }
           />
 
-          {appId === "claude" && (
+          {/* claude 系应用（claude / claude-science；claude-desktop 在入口处分流，走不到这里） */}
+          {appId.startsWith("claude") && (
             <ClaudeFormFields
               providerId={providerId}
               shouldShowApiKey={
@@ -2604,6 +2613,36 @@ function ProviderFormFull({
             </>
           ) : (
             <>
+              {showConfigViewModeTabs && (
+                <div className="space-y-2">
+                  <Tabs
+                    value={configViewMode}
+                    onValueChange={(v) =>
+                      setConfigViewMode(v as "form" | "json")
+                    }
+                  >
+                    <TabsList className="inline-flex h-9 w-auto">
+                      <TabsTrigger value="form">
+                        {t("provider.configModeForm")}
+                      </TabsTrigger>
+                      <TabsTrigger value="json">
+                        {t("provider.configModeJson")}
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  <p className="text-xs text-muted-foreground">
+                    {configViewMode === "form"
+                      ? t("provider.configModeFormHint", {
+                          defaultValue:
+                            "结构化选项会自动同步到底层配置；需要编辑更多字段时切换到「JSON」模式。",
+                        })
+                      : t("provider.configModeJsonHint", {
+                          defaultValue:
+                            "直接编辑原始配置 JSON；切换到「表单」可恢复结构化选项。",
+                        })}
+                  </p>
+                </div>
+              )}
               <CommonConfigEditor
                 value={form.getValues("settingsConfig")}
                 onChange={(value) => form.setValue("settingsConfig", value)}
@@ -2617,6 +2656,9 @@ function ProviderFormFull({
                 onModalClose={() => setIsCommonConfigModalOpen(false)}
                 onExtract={handleClaudeExtract}
                 isExtracting={isClaudeExtracting}
+                showJsonEditor={
+                  !showConfigViewModeTabs || configViewMode === "json"
+                }
               />
               {settingsConfigErrorField}
 

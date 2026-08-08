@@ -37,13 +37,15 @@ const sources = [
   { path: 'src-tauri/tauri.conf.json', read: () => readJson('src-tauri/tauri.conf.json').version },
   {
     path: 'src-tauri/Cargo.toml',
-    read: () => readFileSync('src-tauri/Cargo.toml', 'utf8').match(/^version = "(.*)"$/m)?.[1],
+    // \r? everywhere: Windows CI checks out with CRLF (autocrlf), and a regex
+    // anchored on \n reads the version as undefined / with a trailing \r.
+    read: () => readFileSync('src-tauri/Cargo.toml', 'utf8').match(/^version = "([^"]+)"\r?$/m)?.[1],
   },
   {
     path: 'src-tauri/Cargo.lock',
     read: () =>
       readFileSync('src-tauri/Cargo.lock', 'utf8').match(
-        /\[\[package\]\]\nname = "cc-switch"\nversion = "(.*)"/,
+        /\[\[package\]\]\r?\nname = "cc-switch"\r?\nversion = "([^"]+)"/,
       )?.[1],
   },
 ];
@@ -83,7 +85,7 @@ bumpJson('src-tauri/tauri.conf.json', 'version');
 const cargoToml = readFileSync('src-tauri/Cargo.toml', 'utf8');
 writeFileSync(
   'src-tauri/Cargo.toml',
-  cargoToml.replace(/^version = ".*"$/m, `version = "${version}"`),
+  cargoToml.replace(/^version = "[^"]*"(\r?)$/m, `version = "${version}"$1`),
 );
 
 const lockPath = 'src-tauri/Cargo.lock';
@@ -91,7 +93,7 @@ const lock = readFileSync(lockPath, 'utf8');
 writeFileSync(
   lockPath,
   lock.replace(
-    /(\[\[package\]\]\nname = "cc-switch"\nversion = ").*"/,
+    /(\[\[package\]\]\r?\nname = "cc-switch"\r?\nversion = ")[^"]*"/,
     `$1${version}"`,
   ),
 );
