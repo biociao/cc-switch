@@ -47,4 +47,14 @@ const body = lines
   .replace(/\n?---\s*$/, '')
   .trim();
 
-console.log(body);
+// Optional concise Chinese notes for the release page: when the changelog
+// entry embeds a marked block, the release body uses only that block. The
+// markers are HTML comments, so the rendered changelog stays unaffected:
+//   <!-- release-notes:zh:start -->
+//   - 简要中文条目……
+//   <!-- release-notes:zh:end -->
+const zhBlock = body.match(
+  /<!--\s*release-notes:zh:start\s*-->([\s\S]*?)<!--\s*release-notes:zh:end\s*-->/,
+);
+
+console.log((zhBlock ? zhBlock[1] : body).trim());
