@@ -5,6 +5,29 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.2+ciao.8] - 2026-08-10
+
+ciao fork patch release on top of `v3.19.2+ciao.7` with two targeted fixes. The proxy no longer flattens server tool history for DeepSeek's official `/anthropic` endpoint — that endpoint natively executes `web_search` server tools and accepts its own `server_tool_use` / `web_search_tool_result` blocks back, and downgrading them to plain text was teaching the model to imitate the flattened `[web_search] {"query": ...}` form and emit pseudo tool calls as text instead of invoking the real tool. And the Claude Science provider form now actually persists the API format selector: the form rendered the dropdown for claude-science but gated both state init and submit persistence on the `claude` app id, so the choice was silently dropped on save and always fell back to `anthropic`. A small release-CI change rides along: the GitHub Release body now prefers a marked Chinese notes block embedded in the changelog entry.
+
+**Stats**: 3 commits | 3 files changed | +32 insertions | -4 deletions
+
+<!-- release-notes:zh:start -->
+- **修复 DeepSeek 官方 `/anthropic` 端点的 web_search 退化**：代理此前会把历史中的 `server_tool_use` / `web_search_tool_result` 块降级为纯文本，导致模型学会模仿 `[web_search] {"query": ...}` 的文本形式、输出伪工具调用而不再调用真实工具。DeepSeek 官方端点原生执行 web_search 服务端工具并接受自己的历史块，现在与 Anthropic 官方端点一样原样透传。
+- **修复 Claude Science 供应商表单丢失 API 格式选择**：表单为 claude-science 渲染了 API 格式下拉框，但状态初始化和提交保存都只针对 `claude` 应用 id 生效，选择结果在保存时被丢弃、始终回落为 `anthropic`。现在 claude-science 的选择会正确持久化。
+- **发布 CI**：GitHub Release 正文优先使用 CHANGELOG 条目中 `<!-- release-notes:zh:start/end -->` 标记的中文摘要块（本次发布即采用此格式）。
+<!-- release-notes:zh:end -->
+
+### Fixed
+
+- **DeepSeek's Native-Capable Endpoint Lost Its Server Tool History**: `normalize_server_tool_blocks_for_non_official` downgraded `server_tool_use` / `web_search_tool_result` history blocks to plain text for every non-Anthropic endpoint. DeepSeek's official `/anthropic` endpoint natively executes `web_search_20250305` / `web_search_20260209` and accepts its own server tool blocks back in history, so the downgrade only taught the model to imitate the flattened text form and emit pseudo tool calls instead of invoking the real tool. The endpoint is now exempt alongside `api.anthropic.com`.
+- **Claude Science Provider Form Dropped the API Format Selection**: the form rendered the API format selector for claude-science but gated both the state initializer and the submit persistence on `appId === "claude"`, so the selection was discarded on save and the provider always fell back to `anthropic`. Both paths now cover claude-science.
+
+### Changed
+
+- **Release Body Prefers a Marked Chinese Notes Block**: when a changelog entry embeds a `<!-- release-notes:zh:start -->` / `<!-- release-notes:zh:end -->` block, the release workflow uses just that block as the GitHub Release body instead of the full English section; entries without the marker are unchanged.
+
+---
+
 ## [3.19.2+ciao.7] - 2026-08-07
 
 ciao fork release on top of upstream `v3.19.2`. The headline work is a two-front Codex / Claude Science auth-and-model-list pass. On the Codex side, third-party providers no longer inherit `requires_openai_auth = true` — Codex 0.144+ reads that flag as an explicit demand for ChatGPT OAuth, so requests went straight to `auth.openai.com`, bypassing the selected provider and any local proxy; the live config is now normalized on every write path, and legacy stored configs carrying the flag are repaired at switch time. On the Claude Science side, the model picker stopped coming up empty: the Science daemon silently discards any `/v1/models` entry whose `display_name` looks like a machine id (all-lowercase kebab-case), and cc-switch was emitting exactly that — raw upstream ids like `deepseek-v4-pro-260425`, or bare route ids like `claude-opus-5` — so every entry was filtered out and sessions saved on `claude-opus-5` showed "(unavailable)". This release also pulls in the full upstream `v3.19.2` maintenance pass (Codex usage recounting, six-part security hardening, OMO unified config, searchable management panels, Auth Center per-account usage, batched backup/import writes) and ships a few ciao-side commits that had not been released yet: Claude Science model-list env fallback with Form/JSON editing, Kimi for Coding preset context-window alignment, and the Claude provider form's Form/JSON toggle.
