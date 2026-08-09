@@ -504,7 +504,7 @@ function ProviderFormFull({
   });
 
   const [localApiFormat, setLocalApiFormat] = useState<ClaudeApiFormat>(() => {
-    if (appId !== "claude") return "anthropic";
+    if (appId !== "claude" && appId !== "claude-science") return "anthropic";
     return initialData?.meta?.apiFormat ?? "anthropic";
   });
 
@@ -1645,7 +1645,8 @@ function ProviderFormFull({
           ? pricingConfig.pricingModelSource
           : undefined,
       apiFormat:
-        appId === "claude" && category !== "official"
+        (appId === "claude" || appId === "claude-science") &&
+        category !== "official"
           ? isXaiOauthProvider
             ? "openai_responses"
             : localApiFormat

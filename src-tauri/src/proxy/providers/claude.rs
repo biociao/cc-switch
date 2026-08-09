@@ -339,12 +339,22 @@ pub fn normalize_anthropic_messages_for_provider(
 /// For non-official endpoints, downgrade these history blocks to plain text so
 /// retrieved content stays visible to the model; empty blocks are dropped.
 /// Official `api.anthropic.com` traffic passes through untouched.
+///
+/// DeepSeek's official `/anthropic` endpoint is exempt as well: it natively
+/// executes `web_search_20250305` / `web_search_20260209` and accepts its own
+/// `server_tool_use` / `web_search_tool_result` blocks back in history.
+/// Downgrading them to text taught the model to imitate the flattened
+/// `[web_search] {"query": ...}` form and emit pseudo tool calls as plain
+/// text instead of invoking the real tool.
 pub fn normalize_server_tool_blocks_for_non_official(
     body: &mut Value,
     provider: &Provider,
     api_format: &str,
 ) -> bool {
-    if api_format.trim() != "anthropic" || is_anthropic_official_endpoint(provider) {
+    if api_format.trim() != "anthropic"
+        || is_anthropic_official_endpoint(provider)
+        || is_deepseek_official_anthropic_endpoint(provider)
+    {
         return false;
     }
 
@@ -3402,6 +3412,13 @@ mod tests {
             // No base_url configured → defaults to the official API.
             create_provider(json!({
                 "env": { "ANTHROPIC_API_KEY": "test-key" }
+            })),
+            // DeepSeek's official /anthropic endpoint natively executes
+            // web_search server tools and accepts its own server tool blocks
+            // back in history; downgrading them taught the model to imitate
+            // the flattened `[web_search] {...}` text form.
+            create_provider(json!({
+                "env": { "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic", "ANTHROPIC_API_KEY": "test-key" }
             })),
         ];
 
