@@ -346,17 +346,23 @@ pub fn normalize_anthropic_messages_for_provider(
 /// Downgrading them to text taught the model to imitate the flattened
 /// `[web_search] {"query": ...}` form and emit pseudo tool calls as plain
 /// text instead of invoking the real tool.
+///
+/// The DeepSeek exemption only keeps *structurally valid* blocks: Claude
+/// Science's daemon persists `web_search_tool_result` blocks without
+/// `tool_use_id` (usually with empty content) into session history, and
+/// DeepSeek's strict deserializer rejects those with
+/// `missing field `tool_use_id``. Malformed blocks are still downgraded to
+/// text (or dropped when there is no extractable text) even on native-capable
+/// endpoints — they cannot be paired with a `server_tool_use` anyway.
 pub fn normalize_server_tool_blocks_for_non_official(
     body: &mut Value,
     provider: &Provider,
     api_format: &str,
 ) -> bool {
-    if api_format.trim() != "anthropic"
-        || is_anthropic_official_endpoint(provider)
-        || is_deepseek_official_anthropic_endpoint(provider)
-    {
+    if api_format.trim() != "anthropic" || is_anthropic_official_endpoint(provider) {
         return false;
     }
+    let keep_native_server_tools = is_deepseek_official_anthropic_endpoint(provider);
 
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return false;
@@ -373,6 +379,10 @@ pub fn normalize_server_tool_blocks_for_non_official(
         for block in std::mem::take(content) {
             let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
             if block_type == "server_tool_use" {
+                if keep_native_server_tools {
+                    rewritten.push(block);
+                    continue;
+                }
                 if let Some(text) = server_tool_use_text(&block) {
                     rewritten.push(json!({ "type": "text", "text": text }));
                 }
@@ -380,6 +390,14 @@ pub fn normalize_server_tool_blocks_for_non_official(
             } else if block_type.ends_with("_tool_result") {
                 // Plain client-side `tool_result` does NOT match this suffix
                 // (no second underscore) and stays untouched.
+                let has_tool_use_id = block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty());
+                if keep_native_server_tools && has_tool_use_id {
+                    rewritten.push(block);
+                    continue;
+                }
                 if let Some(text) = tool_result_content_text(&block) {
                     rewritten.push(json!({ "type": "text", "text": text }));
                 }
@@ -3413,13 +3431,6 @@ mod tests {
             create_provider(json!({
                 "env": { "ANTHROPIC_API_KEY": "test-key" }
             })),
-            // DeepSeek's official /anthropic endpoint natively executes
-            // web_search server tools and accepts its own server tool blocks
-            // back in history; downgrading them taught the model to imitate
-            // the flattened `[web_search] {...}` text form.
-            create_provider(json!({
-                "env": { "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic", "ANTHROPIC_API_KEY": "test-key" }
-            })),
         ];
 
         for provider in providers {
@@ -3432,6 +3443,35 @@ mod tests {
             assert!(!changed);
             assert_eq!(body, original);
         }
+    }
+
+    #[test]
+    fn test_deepseek_native_keeps_valid_blocks_drops_malformed() {
+        // DeepSeek 官方端点原生执行 web_search：结构合法的 server tool 块原样保留，
+        // 但 Claude Science 历史里无 tool_use_id 的畸形 web_search_tool_result 必须
+        // 剔除——否则上游 serde 校验以 "missing field `tool_use_id`" 400 拒绝。
+        let mut body = server_tool_history_body();
+
+        let changed = normalize_server_tool_blocks_for_non_official(
+            &mut body,
+            &deepseek_official_provider(),
+            "anthropic",
+        );
+
+        assert!(changed);
+        let content = body["messages"][1]["content"].as_array().unwrap();
+        // text + server_tool_use（保留）+ [无 id 畸形块被剔除] + 合法结果块（保留）+ tool_use
+        assert_eq!(content.len(), 4);
+        assert_eq!(content[1]["type"], "server_tool_use");
+        assert_eq!(content[1]["id"], "srvtoolu_1");
+        assert_eq!(content[2]["type"], "web_search_tool_result");
+        assert_eq!(content[2]["tool_use_id"], "srvtoolu_1");
+        assert_eq!(content[3]["type"], "tool_use");
+        // 无 tool_use_id 的畸形块不再出现
+        let remaining = serde_json::to_string(&body).unwrap();
+        assert!(!remaining.contains("\"web_search_tool_result\",\"content\":[]"));
+        // client 侧 tool_result 不受影响
+        assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
     }
 
     #[test]
