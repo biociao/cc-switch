@@ -1199,6 +1199,17 @@ impl RequestForwarder {
             mapped_body
         };
 
+        // 记录映射后的模型是否通过 [1m] 标记显式声明了 1M 上下文（标记会在下方
+        // 被剥离，所以必须在剥离前判定）。Claude Science 等客户端会为内置注册表
+        // 里的 1M 第一方模型（claude-opus-5、claude-sonnet-5 等）自动附加
+        // context-1m beta；若路由的上游模型并未声明 1M（如 k3-256k 仅 256K），
+        // 透传该 beta 会被上游以 "supports only 256K context" 拒绝（HTTP 401）。
+        let mapped_model_declares_1m = mapped_body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(|m| m.to_ascii_lowercase().contains("[1m]"))
+            .unwrap_or(false);
+
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
 
@@ -1918,7 +1929,7 @@ impl RequestForwarder {
         // 预计算 anthropic-beta 值（仅 Claude）
         let anthropic_beta_value = if should_send_anthropic_headers {
             const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
-            Some(if let Some(beta) = headers.get("anthropic-beta") {
+            let raw_beta = if let Some(beta) = headers.get("anthropic-beta") {
                 if let Ok(beta_str) = beta.to_str() {
                     if beta_str.contains(CLAUDE_CODE_BETA) {
                         beta_str.to_string()
@@ -1930,6 +1941,21 @@ impl RequestForwarder {
                 }
             } else {
                 CLAUDE_CODE_BETA.to_string()
+            };
+            // 第三方上游未通过 [1m] 标记声明 1M 时，剥离客户端自动附加的
+            // context-1m beta：客户端按第一方注册表（如 claude-opus-5=1M）加上的
+            // 1M 声明对 k3-256k 等 256K 上游会被直接 401 拒绝。官方 Anthropic
+            // 上游保留原值，避免降级真实的第一方 1M 模型。
+            let is_official_anthropic = base_url
+                .parse::<http::Uri>()
+                .ok()
+                .and_then(|u| u.host().map(str::to_ascii_lowercase))
+                .map(|host| host == "anthropic.com" || host.ends_with(".anthropic.com"))
+                .unwrap_or(false);
+            Some(if mapped_model_declares_1m || is_official_anthropic {
+                raw_beta
+            } else {
+                strip_context_1m_beta(&raw_beta)
             })
         } else if codex_impersonate_claude_code || codex_anthropic_one_m {
             // Codex→Anthropic: emulation injects the claude-code marker; a [1m]
@@ -2895,6 +2921,20 @@ fn strip_beta_query(query: Option<&str>) -> Option<String> {
     }
 }
 
+/// 从逗号分隔的 anthropic-beta 值中移除 `context-1m-2025-08-07` 标记。
+///
+/// Claude Science 等客户端按内置注册表给 1M 第一方模型自动附加该 beta，而代理
+/// 后面的第三方上游（如 Kimi k3-256k 仅 256K）会因此直接 401。仅在路由模型通过
+/// `[1m]` 标记显式声明 1M、或上游是官方 Anthropic 时才应保留，其余情况在转发前
+/// 由此函数剥离。
+fn strip_context_1m_beta(beta: &str) -> String {
+    beta.split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty() && !token.eq_ignore_ascii_case("context-1m-2025-08-07"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
 }
@@ -3739,6 +3779,34 @@ mod tests {
                 .get("anthropic-beta")
                 .and_then(|value| value.to_str().ok()),
             Some("claude-code-20250219,context-1m-2025-08-07")
+        );
+    }
+
+    #[test]
+    fn strip_context_1m_beta_removes_only_the_1m_marker() {
+        // Claude Science 自动附加的 context-1m 被剥离，其余 beta 原样保留
+        assert_eq!(
+            strip_context_1m_beta(
+                "claude-code-20250219, interleaved-thinking-2025-05-14, context-1m-2025-08-07"
+            ),
+            "claude-code-20250219,interleaved-thinking-2025-05-14"
+        );
+    }
+
+    #[test]
+    fn strip_context_1m_beta_case_insensitive_and_whitespace_tolerant() {
+        assert_eq!(strip_context_1m_beta("Context-1M-2025-08-07"), "");
+        assert_eq!(
+            strip_context_1m_beta("context-1m-2025-08-07,claude-code-20250219"),
+            "claude-code-20250219"
+        );
+    }
+
+    #[test]
+    fn strip_context_1m_beta_keeps_list_without_marker() {
+        assert_eq!(
+            strip_context_1m_beta("claude-code-20250219"),
+            "claude-code-20250219"
         );
     }
 

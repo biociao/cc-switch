@@ -1586,9 +1586,13 @@ function ProviderFormFull({
       // Claude web_search 兼容策略（仅 Claude 常规供应商；聚合供应商走
       // 独立的 AggregateProviderForm，不经过这里）
       webSearchCompat: appId === "claude" ? webSearchCompat : undefined,
-      // 过滤空搜索结果 text block（仅 Claude，默认关 = 不写入）
+      // 过滤空搜索结果 text block（claude / claude-science 均由代理侧
+      // app 无关地执行，默认关 = 不写入）
       webSearchResultFilter:
-        appId === "claude" && webSearchResultFilter ? true : undefined,
+        (appId === "claude" || appId === "claude-science") &&
+        webSearchResultFilter
+          ? true
+          : undefined,
       claudeDesktopMode: undefined,
       // 保存 providerType（用于识别 Copilot / Codex OAuth 等特殊供应商）
       providerType,
@@ -2665,7 +2669,8 @@ function ProviderFormFull({
 
               {/* Claude web_search 兼容策略：对不支持/假支持联网搜索的
                   第三方中转渠道，写入 live 配置时注入
-                  permissions.deny: ["WebSearch"] 关闭 WebSearch */}
+                  permissions.deny: ["WebSearch"] 关闭 WebSearch（仅 Claude Code，
+                  Science/Desktop 无此 live 配置语义） */}
               {appId === "claude" && (
                 <div className="space-y-2">
                   <Label htmlFor="webSearchCompat">
@@ -2708,6 +2713,13 @@ function ProviderFormFull({
                         "部分中转渠道会把搜索结果以纯文本注入对话；对此类渠道选择“关闭”即可在写入配置时禁用 WebSearch",
                     })}
                   </p>
+                </div>
+              )}
+
+              {/* 空搜索结果过滤：代理由请求/响应双侧执行，app 无关，
+                  claude 与 claude-science 供应商都可开启 */}
+              {(appId === "claude" || appId === "claude-science") && (
+                <div className="space-y-2">
                   <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
                     <input
                       type="checkbox"
