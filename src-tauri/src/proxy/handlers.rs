@@ -429,6 +429,16 @@ fn spawn_claude_usage_log(
     });
 }
 
+/// 把 Anthropic 响应中的 model 重写为客户端请求的模型 id（路由 id）。
+/// OpenAI 兼容上游返回的 model 通常是上游自己的模型 id，而 Anthropic 客户端
+/// （Claude Science/Code/Desktop）都期望收到请求时使用的模型 id。
+/// ciao 版对所有 app 统一启用该重写（上游 PR 仅对 Claude Science 开启）。
+fn normalize_response_model(request_model: &str, anthropic_response: &mut Value) {
+    if let Some(model) = anthropic_response.get_mut("model") {
+        *model = json!(request_model);
+    }
+}
+
 async fn handle_claude_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
@@ -467,11 +477,18 @@ async fn handle_claude_transform(
 
     if use_streaming {
         // 根据 api_format 选择流式转换器
+        // 把响应 model 重写为请求时使用的路由 id：OpenAI 兼容上游回显的是它自己的
+        // 模型 id，而 Anthropic 客户端期望收到请求中的模型名。ciao 版对所有 app
+        // 统一启用（上游 PR 仅对 Claude Science 开启）。
+        let expected_model = Some(ctx.request_model.clone());
         let stream = response.bytes_stream();
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
-            Box::new(Box::pin(create_anthropic_sse_stream_from_responses(stream)))
+            Box::new(Box::pin(create_anthropic_sse_stream_from_responses(
+                stream,
+                expected_model.clone(),
+            )))
         } else if api_format == "gemini_native" {
             Box::new(Box::pin(create_anthropic_sse_stream_from_gemini(
                 stream,
@@ -479,9 +496,13 @@ async fn handle_claude_transform(
                 Some(ctx.provider.id.clone()),
                 Some(ctx.session_id.clone()),
                 tool_schema_hints.clone(),
+                expected_model.clone(),
             )))
         } else {
-            Box::new(Box::pin(create_anthropic_sse_stream(stream)))
+            Box::new(Box::pin(create_anthropic_sse_stream(
+                stream,
+                expected_model.clone(),
+            )))
         };
 
         // 创建使用量收集器；关闭 usage logging 时不要再解析转换后的 SSE。
@@ -652,7 +673,7 @@ async fn handle_claude_transform(
     } else {
         transform::openai_to_anthropic(upstream_response)
     };
-    let anthropic_response = match transform_result {
+    let mut anthropic_response = match transform_result {
         Ok(response) => response,
         Err(error) => {
             log::error!("[Claude] 转换响应失败: {error}");
@@ -673,6 +694,11 @@ async fn handle_claude_transform(
     // 全 0 usage 不落账（对齐 Codex 流式收集器的 skip）：SSE 聚合兜底救回的流
     // 在上游缺 stream_options.include_usage 时没有 usage，写入只会产生无意义空行
     spawn_claude_usage_log(state, ctx, &anthropic_response, status.as_u16(), false);
+
+    // OpenAI 兼容格式下，上游响应的 model 字段通常是上游自己的模型 id（如 gpt-4o）。
+    // ciao 版对所有 app 统一把响应 model 重写为请求时使用的路由 id
+    // （上游 PR 仅对 Claude Science 开启，Code/Desktop 保持上游回显）。
+    normalize_response_model(&ctx.request_model, &mut anthropic_response);
 
     // 构建响应
     let mut builder = axum::response::Response::builder().status(status);
@@ -2870,7 +2896,7 @@ async fn log_usage(
 mod tests {
     use super::{
         body_looks_like_sse, chat_sse_to_response_value, classify_body_for_diagnostics,
-        codex_proxy_error_json, responses_sse_to_response_value,
+        codex_proxy_error_json, normalize_response_model, responses_sse_to_response_value,
         should_use_claude_transform_streaming, transform, upstream_body_parse_error,
     };
     use crate::proxy::ProxyError;
@@ -3551,5 +3577,32 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
         assert_eq!(body["error"]["provider"], "HCAI");
         assert_eq!(body["error"]["model"], "gpt-5.5");
         assert_eq!(body["error"]["endpoint"], "/responses");
+    }
+
+    #[test]
+    fn normalize_response_model_rewrites_to_request_model() {
+        let mut response = serde_json::json!({
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "model": "glm-5.2",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 2}
+        });
+        // ciao 版对所有 app 统一重写（上游 PR 仅 Claude Science）。
+        normalize_response_model("claude-opus-5", &mut response);
+        assert_eq!(response["model"], "claude-opus-5");
+    }
+
+    #[test]
+    fn normalize_response_model_noop_without_model_field() {
+        let mut response = serde_json::json!({
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant"
+        });
+        normalize_response_model("claude-opus-5", &mut response);
+        assert!(response.get("model").is_none());
     }
 }
