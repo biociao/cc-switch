@@ -5,6 +5,28 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.2+ciao.9] - 2026-08-12
+
+ciao fork patch release on top of `v3.19.2+ciao.8`, extending the Claude Science proxy fixes to every app and closing out three Kimi/DeepSeek integration regressions. The response-`model` normalization that previously only ran for Claude Science now applies to all apps on every transform path, so upstreams that echo back their own model id (Kimi, GLM, DeepSeek, MiniMax…) no longer leak foreign ids into Claude-side session state. Non-1M upstreams no longer inherit the `context-1m-2025-08-07` beta header: the Science daemon's built-in registry marks `claude-opus-5` / `claude-sonnet-5` as 1M models and auto-attaches that beta, which Kimi k3-256k answers with a hard 401 — the proxy now strips it unless the mapped model explicitly carries the `[1m]` marker or the upstream is Anthropic itself. DeepSeek's native `/anthropic` path now drops malformed `web_search_tool_result` blocks that carry no `tool_use_id` (the Science daemon persists such blocks into history, and DeepSeek's strict deserialization rejected the whole request with a 400); well-formed server tool blocks still pass through untouched. And the "filter empty search results" switch is finally available on Claude Science providers — it was gated on the `claude` app id in both the form's visibility and its save payload, so Science providers could never turn it on and kept emitting bare `Search results for query:` headers.
+
+**Stats**: 4 commits | 8 files changed | +406 insertions | -53 deletions
+
+<!-- release-notes:zh:start -->
+- **响应 model 归一化推广到所有应用**：此前只有 Claude Science 会把上游响应里的 `model` 字段改回客户端请求的模型，现在所有应用的所有转换路径（含流式）都会归一化，Kimi/GLM/DeepSeek 等上游返回的自家模型 id 不再渗入 Claude 侧会话状态。
+- **非 1M 上游剥离 context-1m beta（修复 Kimi k3-256k 401）**：Science daemon 内置注册表把 `claude-opus-5` / `claude-sonnet-5` 标记为 1M 模型并自动附加 `anthropic-beta: context-1m-2025-08-07`，透传给仅支持 256K 的 Kimi k3-256k 会被 401 拒绝。现在映射后的模型没有 `[1m]` 标记且上游非 Anthropic 官方时，代理会剥离该 beta。
+- **DeepSeek 原生路径剔除畸形 server tool 块（修复 missing `tool_use_id` 400）**：Science daemon 会把缺 `tool_use_id` 的空 `web_search_tool_result` 块持久化进历史，DeepSeek 严格的反序列化校验会整单拒绝（400）。现在仅剔除这些畸形块，带 id 的正常块仍原样透传。
+- **「过滤空搜索结果」开关对 Claude Science 开放**：该复选框的展示与保存此前都只认 `claude` 应用 id，Science 供应商永远开不了，导致 `Search results for query:` 空头重复输出。现在 Science 供应商可在编辑框中勾选生效。
+<!-- release-notes:zh:end -->
+
+### Fixed
+
+- **Response Model Normalization Now Covers Every App**: `maybe_normalize_response_model` was gated on Claude Science, so for other apps the upstream's own model id (e.g. `k3-256k`, `glm-5-2`) leaked into response metadata on transform paths. The normalization is now unconditional — non-streaming responses and every streaming adapter (`expected_model`) rewrite the echoed `model` back to the client-requested one, and payloads without a `model` field pass through untouched.
+- **Non-1M Upstreams No Longer Inherit the context-1m Beta**: the Science daemon's built-in registry marks `claude-opus-5` / `claude-sonnet-5` as 1M-context models and auto-attaches `anthropic-beta: context-1m-2025-08-07`; forwarded verbatim, Kimi k3-256k rejects it with `401: k3-256k supports only 256K context`. The forwarder now strips that beta token after model mapping when the mapped model carries no `[1m]` marker and the upstream is not `*.anthropic.com` — the marker check runs before `[1m]` suffix stripping, so explicit 1M routes keep the beta.
+- **DeepSeek's Native Path Drops Malformed Server Tool Blocks**: the Science daemon persists `web_search_tool_result` blocks that carry no `tool_use_id` into session history, and the DeepSeek pass-through exemption introduced in `v3.19.2+ciao.8` forwarded them verbatim — DeepSeek's strict deserialization then rejected the entire request with `400: messages[N]: missing field tool_use_id`. `normalize_server_tool_blocks_for_non_official` now keeps only id-bearing blocks on the native path and degrades/drops the malformed ones; well-formed server tool history is still passed through untouched.
+- **Empty-Search-Results Filter Available for Claude Science**: the `webSearchResultFilter` checkbox visibility and its save payload were both gated on `appId === "claude"`, so Science providers could never enable the filter and kept emitting repeated bare `Search results for query:` headers on empty web_search results. Both paths now accept `claude-science`; the `webSearchCompat` dropdown remains Claude-only.
+
+---
+
 ## [3.19.2+ciao.8] - 2026-08-10
 
 ciao fork patch release on top of `v3.19.2+ciao.7` with two targeted fixes. The proxy no longer flattens server tool history for DeepSeek's official `/anthropic` endpoint — that endpoint natively executes `web_search` server tools and accepts its own `server_tool_use` / `web_search_tool_result` blocks back, and downgrading them to plain text was teaching the model to imitate the flattened `[web_search] {"query": ...}` form and emit pseudo tool calls as text instead of invoking the real tool. And the Claude Science provider form now actually persists the API format selector: the form rendered the dropdown for claude-science but gated both state init and submit persistence on the `claude` app id, so the choice was silently dropped on save and always fell back to `anthropic`. A small release-CI change rides along: the GitHub Release body now prefers a marked Chinese notes block embedded in the changelog entry.
