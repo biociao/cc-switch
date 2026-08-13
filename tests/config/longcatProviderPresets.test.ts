@@ -125,7 +125,8 @@ describe("Longcat provider presets", () => {
     expect(preset.modelCatalog).toEqual([
       expect.objectContaining({
         model: LONGCAT_MODEL,
-        displayName: LONGCAT_DISPLAY_NAME,
+        // Codex picker 显示名用原生模型名（路由仍按 model 真实上游名）
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1048576,
       }),
     ]);

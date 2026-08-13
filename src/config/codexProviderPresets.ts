@@ -141,12 +141,12 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     modelCatalog: modelCatalog([
       {
         model: "kimi-k2.7-code",
-        displayName: "Kimi K2.7 Code",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
       {
         model: "kimi-k3",
-        displayName: "Kimi K3",
+        displayName: "GPT-5.5",
         contextWindow: 1048576,
       },
     ]),
@@ -179,7 +179,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     modelCatalog: modelCatalog([
       {
         model: "kimi-for-coding",
-        displayName: "Kimi For Coding",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
     ]),
@@ -498,7 +498,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "ark-code-latest",
-        displayName: "Ark Code Latest",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 256000,
       },
     ]),
@@ -529,7 +529,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "ark-code-latest",
-        displayName: "Ark Code Latest",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 256000,
       },
     ]),
@@ -559,7 +559,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "doubao-seed-2-1-pro-260628",
-        displayName: "Doubao Seed 2.1 Pro",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
     ]),
@@ -584,7 +584,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "Pro/MiniMaxAI/MiniMax-M2.7",
-        displayName: "Pro / MiniMax M2.7",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 200000,
       },
     ]),
@@ -609,7 +609,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "MiniMaxAI/MiniMax-M2.7",
-        displayName: "MiniMax M2.7",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 200000,
       },
     ]),
@@ -654,7 +654,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "zai-org/glm-5.1",
-        displayName: "GLM 5.1",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 200000,
       },
     ]),
@@ -943,16 +943,16 @@ wire_api = "responses"`,
     // GPT-5 harness + low/high/max 思考档，需 codex >= 0.144.0），这里只保留行清单与展示名。
     apiFormat: "openai_responses",
     modelCatalog: modelCatalog([
-      {
-        model: "deepseek-v4-flash",
-        displayName: "DeepSeek V4 Flash",
-        contextWindow: 1048576,
-      },
       // 官方预计 2026-08 初开通 pro 的 Codex 集成（官方 models.json 已含该条目），
       // 在那之前切到 pro 会上游报错
       {
         model: "deepseek-v4-pro",
-        displayName: "DeepSeek V4 Pro",
+        displayName: "GPT-5.6-Sol",
+        contextWindow: 1048576,
+      },
+      {
+        model: "deepseek-v4-flash",
+        displayName: "GPT-5.5",
         contextWindow: 1048576,
       },
     ]),
@@ -973,7 +973,7 @@ wire_api = "responses"`,
     endpointCandidates: ["https://open.bigmodel.cn/api/coding/paas/v4"],
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
-      { model: "glm-5.2", displayName: "GLM-5.2", contextWindow: 200000 },
+      { model: "glm-5.2", displayName: "GPT-5.6-Sol", contextWindow: 200000 },
     ]),
     codexChatReasoning: {
       supportsThinking: true,
@@ -999,7 +999,7 @@ wire_api = "responses"`,
     endpointCandidates: ["https://api.z.ai/api/coding/paas/v4"],
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
-      { model: "glm-5.2", displayName: "GLM-5.2", contextWindow: 200000 },
+      { model: "glm-5.2", displayName: "GPT-5.6-Sol", contextWindow: 200000 },
     ]),
     codexChatReasoning: {
       supportsThinking: true,
@@ -1028,7 +1028,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "qianfan-code-latest",
-        displayName: "Qianfan Code Latest",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 131072,
       },
     ]),
@@ -1053,7 +1053,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "qwen3-coder-plus",
-        displayName: "Qwen3 Coder Plus",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1048576,
       },
     ]),
@@ -1089,14 +1089,14 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "hy3",
-        displayName: "Hy3",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 256000,
         // hy3 不在官方多模态理解模型名单（1823/130988），纯文本
         inputModalities: ["text"],
       },
       {
         model: "hy3-preview",
-        displayName: "Hy3 Preview",
+        displayName: "GPT-5.5",
         contextWindow: 256000,
         inputModalities: ["text"],
       },
@@ -1120,17 +1120,17 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "step-3.7-flash",
-        displayName: "Step 3.7 Flash",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
       {
         model: "step-3.5-flash-2603",
-        displayName: "Step 3.5 Flash 2603",
+        displayName: "GPT-5.5",
         contextWindow: 262144,
       },
       {
         model: "step-3.5-flash",
-        displayName: "Step 3.5 Flash",
+        displayName: "GPT-5.2",
         contextWindow: 262144,
       },
     ]),
@@ -1153,17 +1153,17 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "step-3.7-flash",
-        displayName: "Step 3.7 Flash",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
       {
         model: "step-3.5-flash-2603",
-        displayName: "Step 3.5 Flash 2603",
+        displayName: "GPT-5.5",
         contextWindow: 262144,
       },
       {
         model: "step-3.5-flash",
-        displayName: "Step 3.5 Flash",
+        displayName: "GPT-5.2",
         contextWindow: 262144,
       },
     ]),
@@ -1186,7 +1186,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "ZhipuAI/GLM-5.1",
-        displayName: "ZhipuAI / GLM-5.1",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 200000,
       },
     ]),
@@ -1219,7 +1219,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "LongCat-2.0",
-        displayName: "LongCat 2.0",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1048576,
       },
     ]),
@@ -1245,7 +1245,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "MiniMax-M3",
-        displayName: "MiniMax-M3",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1000000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
@@ -1280,7 +1280,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "MiniMax-M3",
-        displayName: "MiniMax-M3",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1000000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
@@ -1312,7 +1312,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "Ling-2.6-1T",
-        displayName: "Ling-2.6-1T",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
     ]),
@@ -1336,7 +1336,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "mimo-v2.5-pro",
-        displayName: "MiMo V2.5 Pro",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1048576,
         inputModalities: ["text"],
         baseInstructions:
@@ -1344,7 +1344,7 @@ wire_api = "responses"`,
       },
       {
         model: "mimo-v2.5",
-        displayName: "MiMo V2.5",
+        displayName: "GPT-5.5",
         contextWindow: 1048576,
         inputModalities: ["text", "image"],
         baseInstructions:
@@ -1373,7 +1373,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "mimo-v2.5-pro",
-        displayName: "MiMo V2.5 Pro",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 1048576,
         inputModalities: ["text"],
         baseInstructions:
@@ -1381,7 +1381,7 @@ wire_api = "responses"`,
       },
       {
         model: "mimo-v2.5",
-        displayName: "MiMo V2.5",
+        displayName: "GPT-5.5",
         contextWindow: 1048576,
         inputModalities: ["text", "image"],
         baseInstructions:
@@ -1407,7 +1407,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "zai-org/glm-5.1",
-        displayName: "GLM-5.1",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 202800,
       },
     ]),
@@ -1436,7 +1436,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "grok-4.5",
-        displayName: "Grok 4.5",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 500000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
@@ -1459,7 +1459,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "grok-4.5",
-        displayName: "Grok 4.5",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 500000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
@@ -1484,7 +1484,7 @@ wire_api = "responses"`,
     modelCatalog: modelCatalog([
       {
         model: "moonshotai/kimi-k2.5",
-        displayName: "Kimi K2.5",
+        displayName: "GPT-5.6-Sol",
         contextWindow: 262144,
       },
     ]),
@@ -1513,18 +1513,18 @@ wire_api = "responses"`,
     endpointCandidates: ["https://opencode.ai/zen/go/v1"],
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
-      { model: "glm-5.2", displayName: "GLM 5.2", contextWindow: 204800 },
-      { model: "glm-5.1", displayName: "GLM 5.1", contextWindow: 204800 },
+      { model: "glm-5.2", displayName: "GPT-5.6-Sol", contextWindow: 204800 },
+      { model: "glm-5.1", displayName: "GPT-5.5", contextWindow: 204800 },
       {
         model: "kimi-k2.7-code",
-        displayName: "Kimi K2.7 Code",
+        displayName: "GPT-5.2",
         contextWindow: 262144,
       },
-      { model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
-      { model: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash" },
+      { model: "deepseek-v4-pro", displayName: "GPT-5.6-Terra" },
+      { model: "deepseek-v4-flash", displayName: "GPT-5.6-Luna" },
       {
         model: "mimo-v2.5-pro",
-        displayName: "MiMo V2.5 Pro",
+        displayName: "GPT-5.4",
         contextWindow: 1048576,
       },
     ]),
