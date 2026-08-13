@@ -307,6 +307,11 @@
       "restoreBackup": "オンにした際に移行した公式セッションを公式履歴へ復元する（バックアップから正確に復元）",
       "confirm": "オフにする"
     },
+    "codexSyntheticLoginOff": {
+      "title": "Codex ログインバイパスを無効化",
+      "message": "無効化するとローカルの模擬セッションが削除され、Codex デスクトップ版は再び公式ログインを要求します。実際の公式ログインには影響しません。",
+      "confirm": "無効化"
+    },
     "usage": {
       "title": "使用量クエリの設定",
       "message": "使用量クエリにはカスタムスクリプトまたは API パラメータが必要です。プロバイダーから必要な情報を取得していることをご確認ください。\n\n設定方法が不明な場合は、プロバイダーのドキュメントを先にご確認ください。",
@@ -691,6 +696,21 @@
     "codexAuth": "Codex アプリ拡張",
     "preserveCodexOfficialAuthOnSwitch": "直接切替時に公式ログインを保持",
     "preserveCodexOfficialAuthOnSwitchDescription": "ローカルルーティングが無効な場合のサードパーティ切替を制御します。ルーティング接管中は常に Codex の公式ログインを保持します。",
+    "codexSyntheticLogin": "Codex ログインバイパス（ローカル模擬セッション）",
+    "codexSyntheticLoginDescription": "ローカル生成の模擬 ChatGPT セッションを ~/.codex/auth.json に書き込み、デスクトップ版の強制ログインを回避します。サードパーティプロバイダー／ルーティング専用で、OpenAI サーバーとは通信しません。公式プロバイダーは実際のログインを使用してください。",
+    "codexSyntheticLoginStatusLabel": "現在の状態：{{status}}",
+    "codexSyntheticLoginStatusActive": "模擬セッション有効",
+    "codexSyntheticLoginStatusReal": "実際の公式ログインあり（バイパス不要）",
+    "codexSyntheticLoginStatusInactive": "未有効",
+    "codexSyntheticLoginEnable": "有効化",
+    "codexSyntheticLoginDisable": "無効化",
+    "codexSyntheticLoginEnabled": "模擬ログインセッションを書き込みました。Codex を再起動すると有効になります",
+    "codexSyntheticLoginAlreadyActive": "模擬セッションはすでに存在します",
+    "codexSyntheticLoginAlreadyReal": "実際の公式ログインが検出されました。模擬セッションは不要です",
+    "codexSyntheticLoginRemoved": "模擬ログインセッションを削除しました",
+    "codexSyntheticLoginNotSynthetic": "現在のログインは模擬セッションではありません。変更はありません",
+    "codexSyntheticLoginFailed": "操作に失敗しました。もう一度お試しください",
+    "codexSyntheticLoginKeychainWarning": "macOS キーチェーンに「Codex Auth」項目があり、模擬セッションを遮蔽する可能性があります。先に codex logout を実行するか項目を削除してください",
     "unifyCodexSessionHistory": "Codex セッション履歴を統一",
     "unifyCodexSessionHistoryDescription": "オンにすると、公式サブスクリプションも共有の custom プロバイダー ID で動作し、公式とサードパーティのセッションが同じ履歴リストに表示されます。既存の公式セッションの移行も選択できます（移行前に自動バックアップ）。オフにする際はバックアップから復元できます。注意：プロバイダーをまたいで古いセッションを再開すると、encrypted_content の推論内容を相手のバックエンドが復号できず、再開に失敗する場合があります。",
     "unifyCodexHistoryRestoreCompleted": "バックアップから公式セッション履歴を復元しました（セッションファイル {{files}} 件、インデックス {{rows}} 行）",

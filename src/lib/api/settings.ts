@@ -30,6 +30,23 @@ export interface WebDavSyncResult {
   status: string;
 }
 
+export interface CodexSyntheticLoginStatus {
+  /** live auth.json 当前是合成会话 */
+  active: boolean;
+  /** live auth.json 存在真实 ChatGPT 登录材料（非合成） */
+  realLogin: boolean;
+  /** macOS Keychain 存在 "Codex Auth" 项，可能遮蔽 auth.json */
+  keychainConflict: boolean;
+}
+
+export interface CodexSyntheticLoginResult {
+  /** 本次是否写入了新的合成会话 */
+  wrote: boolean;
+  /** 已存在真实登录，拒绝覆盖 */
+  alreadyRealLogin: boolean;
+  keychainConflict: boolean;
+}
+
 export const settingsApi = {
   async get(): Promise<Settings> {
     return await invoke("get_settings");
@@ -47,6 +64,21 @@ export const settingsApi = {
   /** 按迁移备份账本把当时迁入共享桶的官方会话还原回 openai 桶（幂等） */
   async restoreCodexUnifiedHistory(): Promise<CodexUnifyHistoryRestoreResult> {
     return await invoke("restore_codex_unified_history");
+  },
+
+  /** 查询 Codex 免登录（本地模拟会话）状态 */
+  async getCodexSyntheticLoginStatus(): Promise<CodexSyntheticLoginStatus> {
+    return await invoke("get_codex_synthetic_login_status");
+  },
+
+  /** 生成并写入 Codex 免登录合成会话（已有真实登录时拒绝覆盖） */
+  async generateCodexSyntheticLogin(): Promise<CodexSyntheticLoginResult> {
+    return await invoke("generate_codex_synthetic_login");
+  },
+
+  /** 移除 Codex 免登录合成会话（绝不触碰真实登录），返回是否实际删除 */
+  async removeCodexSyntheticLogin(): Promise<boolean> {
+    return await invoke("remove_codex_synthetic_login");
   },
 
   async restart(): Promise<boolean> {

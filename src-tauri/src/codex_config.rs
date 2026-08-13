@@ -2174,8 +2174,15 @@ pub fn write_codex_live_for_provider(
         };
     let config_text = unified_official_config.as_deref().or(config_text);
 
+    // 本地合成的免登录会话与真实 ChatGPT 登录一样必须跨切换保留：第三方
+    // 切换只改 config.toml（key 走 experimental_bearer_token），不覆盖
+    // auth.json，否则 Codex 桌面端会重新强制登录。
+    let live_auth_is_synthetic =
+        category != Some("official") && crate::codex_synthetic_login::live_synthetic_login_active();
+
     let should_write_auth = (category == Some("official") && codex_auth_has_login_material(auth))
         || (category != Some("official")
+            && !live_auth_is_synthetic
             && !crate::settings::preserve_codex_official_auth_on_switch());
 
     if should_write_auth {
@@ -4744,5 +4751,100 @@ model_catalog_json = "cc-switch-model-catalog.json"
             result.is_err(),
             "file larger than MAX_CODEX_CATALOG_BYTES must be rejected"
         );
+    }
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: tempfile::TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().expect("failed to create temp home");
+            let original_home = std::env::var("HOME").ok();
+            let original_userprofile = std::env::var("USERPROFILE").ok();
+            let original_test_home = std::env::var("CC_SWITCH_TEST_HOME").ok();
+
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("USERPROFILE", dir.path());
+            std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn third_party_switch_preserves_synthetic_login_session() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        // 明确关闭"保留官方登录"：合成会话的保留不依赖该开关
+        crate::settings::update_settings(crate::settings::AppSettings {
+            preserve_codex_official_auth_on_switch: false,
+            ..Default::default()
+        })
+        .expect("disable auth preservation");
+
+        let synthetic = crate::codex_synthetic_login::generate_synthetic_codex_auth()
+            .expect("generate synthetic auth");
+        write_codex_live_atomic(&synthetic, Some("")).expect("seed synthetic live auth");
+
+        let provider_auth = json!({ "OPENAI_API_KEY": "sk-third-party" });
+        let provider_config = r#"model_provider = "rightcode"
+model = "gpt-5-codex"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "https://rightcode.example/v1"
+wire_api = "responses"
+"#;
+        write_codex_live_for_provider(Some("custom"), &provider_auth, Some(provider_config))
+            .expect("third-party live write");
+
+        let live_auth: Value =
+            read_json_file(&get_codex_auth_path()).expect("read live auth after switch");
+        assert!(
+            crate::codex_synthetic_login::is_synthetic_codex_auth(&live_auth),
+            "third-party switch must not overwrite the synthetic login session"
+        );
+        assert_eq!(
+            live_auth, synthetic,
+            "synthetic session should survive byte-for-byte"
+        );
+
+        let live_config = read_codex_config_text().expect("read live config");
+        assert!(
+            live_config.contains("experimental_bearer_token"),
+            "provider key should move into config.toml instead of auth.json"
+        );
+        assert!(live_config.contains("sk-third-party"));
+
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
     }
 }

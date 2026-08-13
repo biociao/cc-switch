@@ -8,6 +8,7 @@ mod claude_web_search;
 mod codex_config;
 mod codex_history_migration;
 mod codex_state_db;
+mod codex_synthetic_login;
 mod commands;
 mod config;
 mod database;
@@ -1357,6 +1358,9 @@ pub fn run() {
             commands::save_settings,
             commands::has_codex_unify_history_backup,
             commands::restore_codex_unified_history,
+            commands::get_codex_synthetic_login_status,
+            commands::generate_codex_synthetic_login,
+            commands::remove_codex_synthetic_login,
             commands::get_rectifier_config,
             commands::set_rectifier_config,
             commands::get_optimizer_config,

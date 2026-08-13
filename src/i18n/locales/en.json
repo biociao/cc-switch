@@ -312,6 +312,11 @@
       "restoreBackup": "Restore the official sessions migrated at enable time back to the official history (exact restore from backup)",
       "confirm": "Turn off"
     },
+    "codexSyntheticLoginOff": {
+      "title": "Disable Codex login bypass",
+      "message": "Disabling removes the local synthetic session and the Codex desktop app will require official login again. Real official logins are not affected.",
+      "confirm": "Disable"
+    },
     "usage": {
       "title": "Configure Usage Query",
       "message": "Usage query requires a custom script or API parameters. Please make sure you have obtained the necessary information from your provider.\n\nIf unsure how to configure, please consult your provider's documentation first.",
@@ -696,6 +701,21 @@
     "codexAuth": "Codex App Enhancements",
     "preserveCodexOfficialAuthOnSwitch": "Keep official login for direct switches",
     "preserveCodexOfficialAuthOnSwitchDescription": "Controls third-party switches when local routing is off. Takeover routing always preserves the Codex official login.",
+    "codexSyntheticLogin": "Codex login bypass (local synthetic session)",
+    "codexSyntheticLoginDescription": "Writes a locally generated mock ChatGPT session to ~/.codex/auth.json to bypass the desktop app's forced login. For third-party providers / routing only — it never talks to OpenAI servers. Use a real login for official providers.",
+    "codexSyntheticLoginStatusLabel": "Status: {{status}}",
+    "codexSyntheticLoginStatusActive": "Synthetic session active",
+    "codexSyntheticLoginStatusReal": "Real official login present (no bypass needed)",
+    "codexSyntheticLoginStatusInactive": "Not enabled",
+    "codexSyntheticLoginEnable": "Enable",
+    "codexSyntheticLoginDisable": "Disable",
+    "codexSyntheticLoginEnabled": "Synthetic login session written; restart Codex to take effect",
+    "codexSyntheticLoginAlreadyActive": "A synthetic session already exists",
+    "codexSyntheticLoginAlreadyReal": "A real official login was detected; no synthetic session needed",
+    "codexSyntheticLoginRemoved": "Synthetic login session removed",
+    "codexSyntheticLoginNotSynthetic": "Current login is not a synthetic session; nothing changed",
+    "codexSyntheticLoginFailed": "Operation failed, please try again",
+    "codexSyntheticLoginKeychainWarning": "A \"Codex Auth\" item exists in the macOS Keychain and may shadow the synthetic session; run codex logout or delete the item first",
     "unifyCodexSessionHistory": "Unified Codex session history",
     "unifyCodexSessionHistoryDescription": "When enabled, the official subscription runs under the shared \"custom\" provider id so official and third-party sessions appear in one history list, optionally migrating existing official sessions in (backed up first). When turning it off, the migrated sessions can be restored from backup. Note: resuming an old session across providers may fail because its encrypted_content reasoning can only be decrypted by the backend that created it.",
     "unifyCodexHistoryRestoreCompleted": "Official session history restored from backup ({{files}} session files, {{rows}} index rows)",

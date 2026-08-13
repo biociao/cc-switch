@@ -566,6 +566,20 @@ fn parse_codex_credentials_json(content: &str) -> CodexCredentials {
         );
     }
 
+    // 本地合成的免登录会话没有官方配额可查；拿假 token 请求 chatgpt.com
+    // 后端只会得到 401 噪音。
+    if serde_json::from_str::<serde_json::Value>(content)
+        .map(|value| crate::codex_synthetic_login::is_synthetic_codex_auth(&value))
+        .unwrap_or(false)
+    {
+        return (
+            None,
+            None,
+            CredentialStatus::NotFound,
+            Some("Codex synthetic login session (no official quota)".to_string()),
+        );
+    }
+
     let tokens = match auth.tokens {
         Some(t) => t,
         None => {

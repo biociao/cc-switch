@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, KeyRound } from "lucide-react";
+import { History, KeyRound, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import { ToggleRow } from "@/components/ui/toggle-row";
+import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { settingsApi } from "@/lib/api";
+import {
+  settingsApi,
+  type CodexSyntheticLoginStatus,
+} from "@/lib/api/settings";
 
 interface CodexAuthSettingsProps {
   settings: SettingsFormState;
@@ -23,6 +27,70 @@ export function CodexAuthSettings({
   const [showEnableConfirm, setShowEnableConfirm] = useState(false);
   const [showDisableConfirm, setShowDisableConfirm] = useState(false);
   const [hasUnifyBackup, setHasUnifyBackup] = useState(false);
+  const [syntheticStatus, setSyntheticStatus] =
+    useState<CodexSyntheticLoginStatus | null>(null);
+  const [showSyntheticRemoveConfirm, setShowSyntheticRemoveConfirm] =
+    useState(false);
+  const [syntheticBusy, setSyntheticBusy] = useState(false);
+
+  const refreshSyntheticStatus = () => {
+    void settingsApi
+      .getCodexSyntheticLoginStatus()
+      .then(setSyntheticStatus)
+      .catch(() => setSyntheticStatus(null));
+  };
+
+  useEffect(refreshSyntheticStatus, []);
+
+  const handleSyntheticEnable = async () => {
+    setSyntheticBusy(true);
+    try {
+      const result = await settingsApi.generateCodexSyntheticLogin();
+      if (result.alreadyRealLogin) {
+        toast.info(t("settings.codexSyntheticLoginAlreadyReal"));
+      } else {
+        toast.success(
+          result.wrote
+            ? t("settings.codexSyntheticLoginEnabled")
+            : t("settings.codexSyntheticLoginAlreadyActive"),
+        );
+      }
+      if (result.keychainConflict) {
+        toast.warning(t("settings.codexSyntheticLoginKeychainWarning"));
+      }
+    } catch (error) {
+      console.error("Failed to generate codex synthetic login:", error);
+      toast.error(t("settings.codexSyntheticLoginFailed"));
+    } finally {
+      setSyntheticBusy(false);
+      refreshSyntheticStatus();
+    }
+  };
+
+  const handleSyntheticRemoveConfirm = async () => {
+    setShowSyntheticRemoveConfirm(false);
+    setSyntheticBusy(true);
+    try {
+      const removed = await settingsApi.removeCodexSyntheticLogin();
+      if (removed) {
+        toast.success(t("settings.codexSyntheticLoginRemoved"));
+      } else {
+        toast.info(t("settings.codexSyntheticLoginNotSynthetic"));
+      }
+    } catch (error) {
+      console.error("Failed to remove codex synthetic login:", error);
+      toast.error(t("settings.codexSyntheticLoginFailed"));
+    } finally {
+      setSyntheticBusy(false);
+      refreshSyntheticStatus();
+    }
+  };
+
+  const syntheticStatusText = syntheticStatus?.active
+    ? t("settings.codexSyntheticLoginStatusActive")
+    : syntheticStatus?.realLogin
+      ? t("settings.codexSyntheticLoginStatusReal")
+      : t("settings.codexSyntheticLoginStatusInactive");
 
   const handleUnifyHistoryChange = (checked: boolean) => {
     if (checked) {
@@ -113,6 +181,49 @@ export function CodexAuthSettings({
         onCheckedChange={handleUnifyHistoryChange}
       />
 
+      <div className="flex items-start justify-between gap-4 rounded-lg border border-border/40 p-4">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-0.5 h-4 w-4 text-violet-500" />
+          <div className="space-y-1">
+            <div className="text-sm font-medium leading-none">
+              {t("settings.codexSyntheticLogin")}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.codexSyntheticLoginDescription")}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.codexSyntheticLoginStatusLabel", {
+                status: syntheticStatusText,
+              })}
+            </p>
+            {syntheticStatus?.keychainConflict && (
+              <p className="text-xs text-amber-600 dark:text-amber-500">
+                {t("settings.codexSyntheticLoginKeychainWarning")}
+              </p>
+            )}
+          </div>
+        </div>
+        {syntheticStatus?.active ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={syntheticBusy}
+            onClick={() => setShowSyntheticRemoveConfirm(true)}
+          >
+            {t("settings.codexSyntheticLoginDisable")}
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={syntheticBusy || (syntheticStatus?.realLogin ?? false)}
+            onClick={() => void handleSyntheticEnable()}
+          >
+            {t("settings.codexSyntheticLoginEnable")}
+          </Button>
+        )}
+      </div>
+
       <ConfirmDialog
         isOpen={showEnableConfirm}
         title={t("confirm.unifyCodexHistory.title")}
@@ -136,6 +247,15 @@ export function CodexAuthSettings({
         confirmText={t("confirm.unifyCodexHistoryOff.confirm")}
         onConfirm={(restoreBackup) => void handleDisableConfirm(restoreBackup)}
         onCancel={() => setShowDisableConfirm(false)}
+      />
+
+      <ConfirmDialog
+        isOpen={showSyntheticRemoveConfirm}
+        title={t("confirm.codexSyntheticLoginOff.title")}
+        message={t("confirm.codexSyntheticLoginOff.message")}
+        confirmText={t("confirm.codexSyntheticLoginOff.confirm")}
+        onConfirm={() => void handleSyntheticRemoveConfirm()}
+        onCancel={() => setShowSyntheticRemoveConfirm(false)}
       />
     </section>
   );
