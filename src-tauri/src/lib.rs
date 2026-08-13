@@ -7,6 +7,7 @@ mod claude_plugin;
 mod claude_web_search;
 mod codex_config;
 mod codex_history_migration;
+mod codex_launch;
 mod codex_state_db;
 mod codex_synthetic_login;
 mod commands;
