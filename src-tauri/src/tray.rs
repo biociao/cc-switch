@@ -60,7 +60,6 @@ pub struct TrayTexts {
     pub projects_label: &'static str,
     pub no_project_label: &'static str,
     pub codex_launch_label: &'static str,
-    pub codex_launch_empty_label: &'static str,
 }
 
 /// 将系统区域标识映射为托盘支持的语言码。
@@ -110,8 +109,7 @@ impl TrayTexts {
                 _auto_label: "Auto (Failover)",
                 projects_label: "Projects",
                 no_project_label: "No project",
-                codex_launch_label: "Launch Codex (choose model)",
-                codex_launch_empty_label: "(no model catalog on current provider)",
+                codex_launch_label: "Launch Codex",
             },
             "ja" => Self {
                 show_main: "メインウィンドウを開く",
@@ -122,8 +120,7 @@ impl TrayTexts {
                 _auto_label: "自動 (フェイルオーバー)",
                 projects_label: "プロジェクト",
                 no_project_label: "プロジェクトを使用しない",
-                codex_launch_label: "Codex を起動（モデル選択）",
-                codex_launch_empty_label: "（現在のプロバイダーにモデルカタログなし）",
+                codex_launch_label: "Codex を起動",
             },
             "zh-TW" => Self {
                 show_main: "開啟主介面",
@@ -134,8 +131,7 @@ impl TrayTexts {
                 _auto_label: "自動 (故障轉移)",
                 projects_label: "專案",
                 no_project_label: "不使用專案",
-                codex_launch_label: "啟動 Codex（選擇模型）",
-                codex_launch_empty_label: "（當前供應商無模型目錄）",
+                codex_launch_label: "啟動 Codex",
             },
             _ => Self {
                 show_main: "打开主界面",
@@ -146,8 +142,7 @@ impl TrayTexts {
                 _auto_label: "自动 (故障转移)",
                 projects_label: "项目",
                 no_project_label: "不使用项目",
-                codex_launch_label: "启动 Codex（选择模型）",
-                codex_launch_empty_label: "（当前供应商无模型目录）",
+                codex_launch_label: "启动 Codex",
             },
         }
     }
@@ -481,71 +476,19 @@ pub fn handle_profile_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool
 }
 
 /// 处理供应商托盘事件
-/// 托盘"启动 Codex(选择模型)"菜单项 id 前缀，后接模型 slug。
-const CODEX_LAUNCH_MODEL_PREFIX: &str = "codex_launch_model_";
+/// 托盘"启动 Codex"菜单项 id。
+const CODEX_LAUNCH_ITEM_ID: &str = "codex_launch";
 
-/// 从供应商的 settings_config 提取模型目录条目 `(slug, 显示名)`，去重保序。
-fn codex_launch_model_entries(provider: &crate::provider::Provider) -> Vec<(String, String)> {
-    let Some(models) = provider
-        .settings_config
-        .get("modelCatalog")
-        .and_then(|catalog| catalog.get("models"))
-        .and_then(|models| models.as_array())
-    else {
-        return Vec::new();
-    };
-
-    let mut seen = std::collections::HashSet::new();
-    let mut entries = Vec::new();
-    for entry in models {
-        let Some(slug) = entry.get("model").and_then(|m| m.as_str()) else {
-            continue;
-        };
-        if !seen.insert(slug.to_string()) {
-            continue;
-        }
-        let display = entry
-            .get("displayName")
-            .and_then(|d| d.as_str())
-            .or_else(|| entry.get("display_name").and_then(|d| d.as_str()))
-            .unwrap_or(slug);
-        entries.push((slug.to_string(), display.to_string()));
-    }
-    entries
-}
-
-/// 处理"选择模型并启动 Codex"点击：写顶层 `model` → 重启桌面端 → 刷新勾选。
-fn handle_codex_launch_model_event(app: &tauri::AppHandle, event_id: &str) -> bool {
-    let Some(slug) = event_id.strip_prefix(CODEX_LAUNCH_MODEL_PREFIX) else {
+/// 处理"启动 Codex"点击：重启桌面端（未运行则直接启动）。
+fn handle_codex_launch_event(_app: &tauri::AppHandle, event_id: &str) -> bool {
+    if event_id != CODEX_LAUNCH_ITEM_ID {
         return false;
-    };
-    if slug == "empty" {
-        return true;
     }
 
-    log::info!("托盘选择 Codex 模型并启动: {slug}");
-    let app_handle = app.clone();
-    let slug = slug.to_string();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = crate::codex_config::set_codex_live_top_level_model(&slug) {
-            log::error!("写入 Codex 顶层 model 失败: {e}");
-            return;
-        }
-        match crate::codex_launch::relaunch_codex_app() {
-            Ok(outcome) => log::info!(
-                "Codex 模型已切换为 {slug} 并重启 (waited_quit={})",
-                outcome.waited_quit
-            ),
-            Err(e) => log::warn!("Codex 模型已切换为 {slug}，自动重启失败，请手动重启: {e}"),
-        }
-
-        if let Some(app_state) = app_handle.try_state::<AppState>() {
-            if let Ok(new_menu) = create_tray_menu(&app_handle, app_state.inner()) {
-                if let Some(tray) = app_handle.tray_by_id(TRAY_ID) {
-                    let _ = tray.set_menu(Some(new_menu));
-                }
-            }
-        }
+    log::info!("托盘启动 Codex");
+    tauri::async_runtime::spawn_blocking(move || match crate::codex_launch::relaunch_codex_app() {
+        Ok(outcome) => log::info!("Codex 已启动 (waited_quit={})", outcome.waited_quit),
+        Err(e) => log::warn!("Codex 自动启动失败，请手动启动: {e}"),
     });
     true
 }
@@ -828,49 +771,17 @@ pub fn create_tray_menu(
                 submenu_builder = submenu_builder.item(&item);
             }
 
-            // Codex 专属：选择模型并启动/重启桌面端。桌面端 picker 存在过滤
-            // 本地 catalog 的上游 bug（openai/codex#19694），inline 顶层
-            // `model` 才是可靠的按需切换通道。
+            // Codex 专属：启动/重启桌面端（模型选择交给 Codex 自身）。
             if section.app_type.as_str() == "codex" {
-                let models = current_provider
-                    .map(codex_launch_model_entries)
-                    .unwrap_or_default();
-                let mut launch_builder = SubmenuBuilder::with_id(
+                let launch_item = MenuItem::with_id(
                     app,
-                    "submenu_codex_launch",
+                    CODEX_LAUNCH_ITEM_ID,
                     tray_texts.codex_launch_label,
-                );
-                if models.is_empty() {
-                    let empty_item = MenuItem::with_id(
-                        app,
-                        "codex_launch_model_empty",
-                        tray_texts.codex_launch_empty_label,
-                        false,
-                        None::<&str>,
-                    )
-                    .map_err(|e| AppError::Message(format!("创建 Codex 启动空提示失败: {e}")))?;
-                    launch_builder = launch_builder.item(&empty_item);
-                } else {
-                    let live_model = crate::codex_config::read_codex_live_top_level_model();
-                    for (slug, display) in models {
-                        let item = CheckMenuItem::with_id(
-                            app,
-                            format!("{CODEX_LAUNCH_MODEL_PREFIX}{slug}"),
-                            &display,
-                            true,
-                            live_model.as_deref() == Some(slug.as_str()),
-                            None::<&str>,
-                        )
-                        .map_err(|e| {
-                            AppError::Message(format!("创建 Codex 模型启动项失败: {e}"))
-                        })?;
-                        launch_builder = launch_builder.item(&item);
-                    }
-                }
-                let launch_submenu = launch_builder
-                    .build()
-                    .map_err(|e| AppError::Message(format!("构建 Codex 启动子菜单失败: {e}")))?;
-                submenu_builder = submenu_builder.item(&launch_submenu);
+                    true,
+                    None::<&str>,
+                )
+                .map_err(|e| AppError::Message(format!("创建 Codex 启动项失败: {e}")))?;
+                submenu_builder = submenu_builder.item(&launch_item);
             }
 
             let submenu = submenu_builder.build().map_err(|e| {
@@ -1112,7 +1023,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
             app.exit(0);
         }
         _ => {
-            if handle_codex_launch_model_event(app, event_id) {
+            if handle_codex_launch_event(app, event_id) {
                 return;
             }
             if handle_profile_tray_event(app, event_id) {

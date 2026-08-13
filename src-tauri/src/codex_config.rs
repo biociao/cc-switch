@@ -2436,24 +2436,6 @@ pub fn update_codex_toml_field(toml_str: &str, field: &str, value: &str) -> Resu
     Ok(doc.to_string())
 }
 
-/// 读取 live `config.toml` 的顶层 `model`；缺失或文件不可读时返回 None。
-pub fn read_codex_live_top_level_model() -> Option<String> {
-    let config_text = read_codex_config_text().ok()?;
-    codex_top_level_model(&config_text)
-}
-
-/// 写入 live `config.toml` 的顶层 `model`，其余内容不动。
-///
-/// Codex 桌面端模型 picker 存在过滤本地 catalog 的上游 bug
-/// （openai/codex#19694），但启动时读取的顶层 `model` 始终生效——
-/// 托盘"选择模型并启动"即通过改写该字段实现按需切换。
-pub fn set_codex_live_top_level_model(model: &str) -> Result<(), AppError> {
-    let config_text = read_codex_config_text()?;
-    let updated =
-        update_codex_toml_field(&config_text, "model", model).map_err(AppError::Message)?;
-    write_codex_live_config_atomic(Some(&updated))
-}
-
 /// Remove `base_url` from the active model_provider section only if it matches `predicate`.
 /// Also removes top-level `base_url` if it matches.
 /// Used by proxy cleanup to strip local proxy URLs without touching user-configured URLs.
@@ -4864,39 +4846,5 @@ wire_api = "responses"
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
             .expect("reset settings");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn set_and_read_live_top_level_model_roundtrip() {
-        let _home = TempHome::new();
-        write_codex_live_config_atomic(Some(
-            r#"model_provider = "custom"
-model = "glm-5.2"
-
-[model_providers.custom]
-name = "test"
-base_url = "http://127.0.0.1:15721/v1"
-wire_api = "responses"
-"#,
-        ))
-        .expect("seed live config");
-
-        assert_eq!(
-            read_codex_live_top_level_model().as_deref(),
-            Some("glm-5.2")
-        );
-
-        set_codex_live_top_level_model("kimi-k2.7-code").expect("set model");
-        assert_eq!(
-            read_codex_live_top_level_model().as_deref(),
-            Some("kimi-k2.7-code")
-        );
-
-        // 其余字段不受影响
-        let config = read_codex_config_text().expect("read live config");
-        assert!(config.contains("model_provider = \"custom\""));
-        assert!(config.contains("[model_providers.custom]"));
-        assert!(config.contains("wire_api = \"responses\""));
     }
 }
