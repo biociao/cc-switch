@@ -2503,7 +2503,14 @@ requires_openai_auth = true
         );
         let live_config = fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read Codex config.toml");
-        assert!(live_config.contains("model_catalog_json"));
+        assert!(
+            !live_config.contains("model_catalog_json"),
+            "takeover projection strips the catalog pointer so Codex fetches /v1/models from the proxy"
+        );
+        assert!(
+            crate::codex_config::codex_config_has_proxy_command_auth(&live_config),
+            "takeover projection keeps the command auth table after a mapping refresh"
+        );
 
         updated.settings_config["modelCatalog"] = json!({ "models": [] });
         ProviderService::update(&state, AppType::Codex, None, updated)

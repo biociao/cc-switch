@@ -2357,6 +2357,8 @@ impl ProxyService {
                     token == PROXY_TOKEN_PLACEHOLDER
                 })
                 .map_err(|e| format!("清理 Codex 接管占位符失败: {e}"))?;
+            let updated = crate::codex_config::remove_codex_proxy_command_auth(&updated)
+                .map_err(|e| format!("清理 Codex 接管 command auth 失败: {e}"))?;
             let updated = crate::codex_config::remove_codex_official_proxy_route(&updated)
                 .map_err(|e| format!("清理 Codex 官方接管路由失败: {e}"))?;
             config["config"] = json!(updated);
@@ -2505,12 +2507,19 @@ impl ProxyService {
             return true;
         }
 
-        config
-            .get("config")
-            .and_then(|v| v.as_str())
+        let config_text = config.get("config").and_then(|v| v.as_str());
+
+        if config_text
             .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
             .as_deref()
             == Some(PROXY_TOKEN_PLACEHOLDER)
+        {
+            return true;
+        }
+
+        // 接管投影以 command auth 表（args 带 PROXY_MANAGED 哨兵）替代 bearer
+        // 占位符，接管检测需要识别这种新形态。
+        config_text.is_some_and(crate::codex_config::codex_config_has_proxy_command_auth)
     }
 
     fn is_codex_live_taken_over(config: &Value) -> bool {
@@ -4743,12 +4752,16 @@ wire_api = "responses"
         let live_config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("read live config");
         assert!(
-            live_config.contains("experimental_bearer_token"),
-            "proxy placeholder should move into config.toml instead of auth.json"
+            !live_config.contains("experimental_bearer_token"),
+            "proxy takeover should project command auth instead of a bearer token"
         );
         assert!(
             live_config.contains(PROXY_TOKEN_PLACEHOLDER),
-            "live config should carry the proxy placeholder token"
+            "live config should carry the proxy placeholder via command auth args"
+        );
+        assert!(
+            crate::codex_config::codex_config_has_proxy_command_auth(&live_config),
+            "proxy placeholder should move into a command auth table instead of auth.json"
         );
 
         crate::settings::update_settings(crate::settings::AppSettings::default())
@@ -4801,11 +4814,18 @@ model = "deepseek-v4-flash"
 name = "DeepSeek"
 base_url = "https://api.deepseek.com/v1"
 wire_api = "responses"
-"#
+"#,
+                "modelCatalog": {
+                    "models": [{ "model": "deepseek-v4-flash" }]
+                }
             }),
             None,
         );
         provider.category = Some("cn_official".to_string());
+        provider.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
         db.save_provider("codex", &provider)
             .expect("save DeepSeek provider");
         db.set_current_provider("codex", "deepseek")
@@ -4831,6 +4851,22 @@ wire_api = "responses"
         assert!(
             live_config.contains(PROXY_TOKEN_PLACEHOLDER),
             "takeover placeholder should move into config.toml"
+        );
+        assert!(
+            !live_config.contains("experimental_bearer_token"),
+            "takeover must drop the bearer token (mutually exclusive with provider auth)"
+        );
+        assert!(
+            !live_config.contains("model_catalog_json"),
+            "takeover must drop the catalog pointer so Codex fetches the remote catalog"
+        );
+        assert!(
+            crate::codex_config::codex_config_has_proxy_command_auth(&live_config),
+            "takeover should project a command auth table for the active provider"
+        );
+        assert!(
+            crate::codex_config::get_codex_model_catalog_path().exists(),
+            "catalog file is still generated for the proxy /v1/models handler"
         );
         assert!(
             service.detect_takeover_in_live_config_for_app(&AppType::Codex),
@@ -5701,7 +5737,14 @@ model = "deepseek-v4-flash"
 name = "DeepSeek"
 base_url = "http://127.0.0.1:15721/v1"
 wire_api = "responses"
-experimental_bearer_token = "PROXY_MANAGED"
+requires_openai_auth = false
+
+[model_providers.deepseek.auth]
+command = "/bin/echo"
+args = ["PROXY_MANAGED"]
+timeout_ms = 5000
+refresh_interval_ms = 300000
+cwd = "/"
 "#,
             ),
         )
@@ -5709,7 +5752,7 @@ experimental_bearer_token = "PROXY_MANAGED"
 
         assert!(
             service.detect_takeover_in_live_config_for_app(&AppType::Codex),
-            "config.toml placeholder should be detected before cleanup"
+            "config.toml command auth table should be detected before cleanup"
         );
 
         service
@@ -5728,7 +5771,11 @@ experimental_bearer_token = "PROXY_MANAGED"
             .expect("read live config");
         assert!(
             !live_config.contains(PROXY_TOKEN_PLACEHOLDER),
-            "cleanup should remove config.toml proxy bearer placeholder"
+            "cleanup should remove config.toml proxy command auth placeholder"
+        );
+        assert!(
+            !live_config.contains("[model_providers.deepseek.auth]"),
+            "cleanup should remove the takeover command auth table"
         );
         assert!(
             !live_config.contains("http://127.0.0.1:15721"),

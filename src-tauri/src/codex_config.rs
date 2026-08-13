@@ -1795,6 +1795,152 @@ fn remove_codex_experimental_bearer_token(config_text: &str) -> Result<String, A
     remove_codex_experimental_bearer_token_if(config_text, |_| true)
 }
 
+/// 接管模式下 `[model_providers.<id>.auth]` command auth 的占位 stdout。
+/// 与 `services::proxy` 的 `PROXY_TOKEN_PLACEHOLDER` 同值：command 的 stdout 只充当
+/// 占位 bearer token，cc-switch 代理转发时会替换为真实上游 key，内容无关紧要。
+pub const CODEX_PROXY_COMMAND_AUTH_TOKEN: &str = "PROXY_MANAGED";
+
+#[cfg(windows)]
+const CODEX_PROXY_AUTH_COMMAND: &str = "cmd";
+#[cfg(windows)]
+const CODEX_PROXY_AUTH_ARGS: &[&str] = &["/c", "echo", CODEX_PROXY_COMMAND_AUTH_TOKEN];
+#[cfg(windows)]
+const CODEX_PROXY_AUTH_CWD: &str = "C:\\";
+
+#[cfg(not(windows))]
+const CODEX_PROXY_AUTH_COMMAND: &str = "/bin/echo";
+#[cfg(not(windows))]
+const CODEX_PROXY_AUTH_ARGS: &[&str] = &[CODEX_PROXY_COMMAND_AUTH_TOKEN];
+#[cfg(not(windows))]
+const CODEX_PROXY_AUTH_CWD: &str = "/";
+
+/// Codex models-manager 只对 ChatGPT 登录或配置了 command auth
+/// （`[model_providers.<id>.auth]` 表）的供应商发起远端模型目录拉取
+/// （`GET <base_url>/models`）。接管模式下 base_url 指向本地代理，因此接管投影
+/// 用一张占位 command auth 表替换 `experimental_bearer_token`（两者在 Codex 里
+/// 互斥，共存会直接启动报错），让桌面端模型选择器原生列出第三方模型。
+fn codex_proxy_command_auth_table() -> toml_edit::Table {
+    let mut auth = toml_edit::Table::new();
+    auth["command"] = toml_edit::value(CODEX_PROXY_AUTH_COMMAND);
+    let mut args = toml_edit::Array::new();
+    for arg in CODEX_PROXY_AUTH_ARGS {
+        args.push(*arg);
+    }
+    auth["args"] = toml_edit::value(args);
+    auth["timeout_ms"] = toml_edit::value(5000);
+    auth["refresh_interval_ms"] = toml_edit::value(300_000);
+    auth["cwd"] = toml_edit::value(CODEX_PROXY_AUTH_CWD);
+    auth
+}
+
+/// 判断一张 `[model_providers.<id>.auth]` 表是否为 cc-switch 接管投影写出的
+/// 占位 command auth（args 中带 PROXY_MANAGED 哨兵），避免误删用户自建的 auth。
+fn codex_auth_table_is_proxy_managed(auth: &toml_edit::Table) -> bool {
+    auth.get("args")
+        .and_then(|item| item.as_array())
+        .is_some_and(|args| {
+            args.iter()
+                .any(|arg| arg.as_str() == Some(CODEX_PROXY_COMMAND_AUTH_TOKEN))
+        })
+}
+
+/// 活动 model provider 是否携带 cc-switch 接管投影写出的 command auth 表。
+/// 接管后 config.toml 不再含 `experimental_bearer_token = "PROXY_MANAGED"`，
+/// 接管检测需要改认这张表。
+pub fn codex_config_has_proxy_command_auth(config_text: &str) -> bool {
+    if !config_text.contains(CODEX_PROXY_COMMAND_AUTH_TOKEN) {
+        return false;
+    }
+    let Ok(doc) = config_text.parse::<DocumentMut>() else {
+        return false;
+    };
+    let Some(provider_id) = active_codex_model_provider_id(&doc) else {
+        return false;
+    };
+    doc.get("model_providers")
+        .and_then(|item| item.as_table())
+        .and_then(|table| table.get(provider_id.as_str()))
+        .and_then(|item| item.as_table())
+        .and_then(|table| table.get("auth"))
+        .and_then(|item| item.as_table())
+        .is_some_and(codex_auth_table_is_proxy_managed)
+}
+
+/// 移除活动 model provider 上由接管投影写出的 command auth 表（只认
+/// PROXY_MANAGED 哨兵，用户自建的 auth 表原样保留）。接管关闭/恢复时调用。
+pub fn remove_codex_proxy_command_auth(config_text: &str) -> Result<String, AppError> {
+    if config_text.trim().is_empty() || !config_text.contains(CODEX_PROXY_COMMAND_AUTH_TOKEN) {
+        return Ok(config_text.to_string());
+    }
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    if let Some(provider_id) = active_codex_model_provider_id(&doc) {
+        if let Some(provider_table) = doc
+            .get_mut("model_providers")
+            .and_then(|item| item.as_table_mut())
+            .and_then(|table| table.get_mut(provider_id.as_str()))
+            .and_then(|item| item.as_table_mut())
+        {
+            let is_managed = provider_table
+                .get("auth")
+                .and_then(|item| item.as_table())
+                .is_some_and(codex_auth_table_is_proxy_managed);
+            if is_managed {
+                provider_table.remove("auth");
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+/// 接管投影的鉴权/目录部分：为活动 custom model provider 写入占位 command auth
+/// 表，并清掉与之互斥/短路的旧形态——
+/// - 移除 `experimental_bearer_token`（Codex 报错 "provider auth cannot be
+///   combined with experimental_bearer_token"）；
+/// - 移除顶层 `model_catalog_json` 指针（Codex 见到指针会用 StaticModelsManager
+///   短路远端拉取；catalog 文件仍由代理 `/v1/models` 兜底服务）。
+///
+/// 没有活动 custom provider 表时退化为旧的顶层 bearer 占位写法，保持函数全覆盖。
+fn apply_codex_proxy_command_auth_projection(
+    config_text: &str,
+    fallback_token: Option<&str>,
+) -> Result<String, AppError> {
+    let config_text = set_codex_model_catalog_json_field(config_text, None)?;
+    let config_text = remove_codex_experimental_bearer_token(&config_text)?;
+
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let provider_id =
+        active_codex_model_provider_id(&doc).filter(|id| is_custom_codex_model_provider_id(id));
+
+    let provider_table = provider_id.as_deref().and_then(|id| {
+        doc.get_mut("model_providers")
+            .and_then(|item| item.as_table_mut())
+            .and_then(|table| table.get_mut(id))
+            .and_then(|item| item.as_table_mut())
+    });
+
+    match provider_table {
+        Some(provider_table) => {
+            provider_table["auth"] = toml_edit::Item::Table(codex_proxy_command_auth_table());
+            // 与 bearer 投影保持一致：Codex 0.144+ 把 requires_openai_auth = true
+            // 视为强制 ChatGPT OAuth，会绕过 command auth 与本地代理。
+            provider_table["requires_openai_auth"] = toml_edit::value(false);
+        }
+        None => {
+            if let Some(token) = fallback_token {
+                doc["experimental_bearer_token"] = toml_edit::value(token);
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
 /// Read the current Codex live settings as a `{ auth, config }` object.
 ///
 /// Missing `auth.json` collapses to `{}` so a config-only third-party install
@@ -2212,6 +2358,11 @@ pub fn write_codex_live_for_provider(
 /// requests can use a provider-scoped `experimental_bearer_token`, so switching
 /// providers only needs to update `config.toml`; `auth.json` stays as the user's
 /// long-lived ChatGPT login cache.
+///
+/// 例外：代理接管时 auth 里的 key 是 PROXY_MANAGED 占位符。此时改写为
+/// `[model_providers.<id>.auth]` command auth 投影（见
+/// `apply_codex_proxy_command_auth_projection`），让 Codex 的 models-manager
+/// 向本地代理拉取远端模型目录，桌面端模型选择器才能列出第三方模型。
 pub fn prepare_codex_provider_live_config(
     auth: &Value,
     config_text: &str,
@@ -2220,6 +2371,9 @@ pub fn prepare_codex_provider_live_config(
         .or_else(|| extract_codex_experimental_bearer_token(config_text));
 
     Ok(match token {
+        Some(token) if token == CODEX_PROXY_COMMAND_AUTH_TOKEN => {
+            apply_codex_proxy_command_auth_projection(config_text, Some(&token))?
+        }
         Some(token) => set_codex_experimental_bearer_token(config_text, &token)?,
         None => config_text.to_string(),
     })
@@ -2229,9 +2383,15 @@ pub fn prepare_codex_provider_live_config(
 /// `auth.OPENAI_API_KEY` so the stored provider keeps its canonical shape
 /// and generated live tokens don't leak into stored provider TOML.
 ///
-/// Only intervenes when the live config actually carries a bearer token —
-/// otherwise the function is a no-op so the caller's normal backfill path
-/// (which keeps live `auth` as the authoritative source) is unaffected.
+/// Also strips the proxy-takeover command-auth table
+/// (`[model_providers.<id>.auth]` with the PROXY_MANAGED sentinel) so a
+/// backfill that runs while takeover is active does not bake the takeover
+/// projection into the stored provider config.
+///
+/// Only intervenes when the live config actually carries a bearer token or the
+/// takeover command-auth table — otherwise the function is a no-op so the
+/// caller's normal backfill path (which keeps live `auth` as the authoritative
+/// source) is unaffected.
 pub fn restore_codex_provider_token_for_backfill(
     settings: &mut Value,
     template_settings: &Value,
@@ -2244,14 +2404,18 @@ pub fn restore_codex_provider_token_for_backfill(
         return Ok(());
     };
 
-    let Some(token) = extract_codex_experimental_bearer_token(&config_text) else {
+    let token = extract_codex_experimental_bearer_token(&config_text);
+    let has_proxy_command_auth = codex_config_has_proxy_command_auth(&config_text);
+    if token.is_none() && !has_proxy_command_auth {
         return Ok(());
-    };
+    }
 
     // Strip live-only projection state that prepare_codex_provider_live_config
-    // may have written: the bearer token itself, and the requires_openai_auth =
-    // false flip that keeps Codex 0.144+ from selecting preserved ChatGPT auth.
+    // may have written: the bearer token itself, the takeover command-auth table
+    // (proxy takeover projection), and the requires_openai_auth = false flip that
+    // keeps Codex 0.144+ from selecting preserved ChatGPT auth.
     let cleaned_config = remove_codex_experimental_bearer_token(&config_text)?;
+    let cleaned_config = remove_codex_proxy_command_auth(&cleaned_config)?;
     let cleaned_config = restore_codex_requires_openai_auth_from_template(
         &cleaned_config,
         template_settings
@@ -2263,15 +2427,17 @@ pub fn restore_codex_provider_token_for_backfill(
     if let Some(obj) = settings.as_object_mut() {
         obj.insert("config".to_string(), Value::String(cleaned_config));
 
-        let mut auth = template_settings
-            .get("auth")
-            .filter(|value| value.is_object())
-            .cloned()
-            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-        if let Some(auth_obj) = auth.as_object_mut() {
-            auth_obj.insert("OPENAI_API_KEY".to_string(), Value::String(token));
+        if let Some(token) = token {
+            let mut auth = template_settings
+                .get("auth")
+                .filter(|value| value.is_object())
+                .cloned()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+            if let Some(auth_obj) = auth.as_object_mut() {
+                auth_obj.insert("OPENAI_API_KEY".to_string(), Value::String(token));
+            }
+            obj.insert("auth".to_string(), auth);
         }
-        obj.insert("auth".to_string(), auth);
     }
 
     Ok(())
@@ -2989,6 +3155,207 @@ requires_openai_auth = true
                 .and_then(|v| v.as_bool()),
             Some(true),
             "stored template requires_openai_auth must survive live projection backfill"
+        );
+    }
+
+    #[test]
+    fn prepare_provider_live_config_projects_command_auth_for_proxy_placeholder() {
+        let auth = json!({ "OPENAI_API_KEY": CODEX_PROXY_COMMAND_AUTH_TOKEN });
+        let config_text = r#"model_provider = "custom"
+model = "deepseek-v4-flash"
+model_catalog_json = "cc-switch-model-catalog.json"
+
+[model_providers.custom]
+name = "DeepSeek"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+experimental_bearer_token = "PROXY_MANAGED"
+"#;
+
+        let projected =
+            prepare_codex_provider_live_config(&auth, config_text).expect("project takeover auth");
+        let parsed: toml::Value = toml::from_str(&projected).expect("valid TOML");
+
+        assert!(
+            parsed.get("experimental_bearer_token").is_none(),
+            "takeover projection must not keep a top-level bearer token"
+        );
+        assert!(
+            parsed.get("model_catalog_json").is_none(),
+            "takeover projection must drop the cc-switch catalog pointer (Codex would short-circuit the remote fetch)"
+        );
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("custom"))
+            .expect("custom provider table");
+        assert!(
+            provider.get("experimental_bearer_token").is_none(),
+            "provider auth cannot be combined with experimental_bearer_token"
+        );
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        let auth_table = provider
+            .get("auth")
+            .expect("command auth table should be projected");
+        assert!(auth_table.get("command").and_then(|v| v.as_str()).is_some());
+        let args: Vec<&str> = auth_table
+            .get("args")
+            .and_then(|v| v.as_array())
+            .expect("auth.args")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            args.contains(&CODEX_PROXY_COMMAND_AUTH_TOKEN),
+            "command auth stdout should be the proxy placeholder, got {args:?}"
+        );
+        assert!(auth_table.get("cwd").and_then(|v| v.as_str()).is_some());
+        assert!(
+            codex_config_has_proxy_command_auth(&projected),
+            "takeover detection must recognize the projected command auth table"
+        );
+    }
+
+    #[test]
+    fn command_auth_projection_preserves_user_owned_catalog_pointer() {
+        let auth = json!({ "OPENAI_API_KEY": CODEX_PROXY_COMMAND_AUTH_TOKEN });
+        let config_text = r#"model_provider = "custom"
+model_catalog_json = "my-own-catalog.json"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#;
+
+        let projected =
+            prepare_codex_provider_live_config(&auth, config_text).expect("project takeover auth");
+        let parsed: toml::Value = toml::from_str(&projected).expect("valid TOML");
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("my-own-catalog.json"),
+            "user-managed catalog pointers are left untouched"
+        );
+    }
+
+    #[test]
+    fn command_auth_projection_falls_back_to_top_level_bearer_without_provider_table() {
+        let auth = json!({ "OPENAI_API_KEY": CODEX_PROXY_COMMAND_AUTH_TOKEN });
+        let config_text = "model = \"gpt-5.1-codex\"\n";
+
+        let projected =
+            prepare_codex_provider_live_config(&auth, config_text).expect("project takeover auth");
+        let parsed: toml::Value = toml::from_str(&projected).expect("valid TOML");
+        assert_eq!(
+            parsed
+                .get("experimental_bearer_token")
+                .and_then(|v| v.as_str()),
+            Some(CODEX_PROXY_COMMAND_AUTH_TOKEN),
+            "without a custom provider table the projection keeps the legacy bearer fallback"
+        );
+    }
+
+    #[test]
+    fn remove_proxy_command_auth_only_removes_managed_table() {
+        let managed = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.custom.auth]
+command = "/bin/echo"
+args = ["PROXY_MANAGED"]
+timeout_ms = 5000
+refresh_interval_ms = 300000
+cwd = "/"
+"#;
+        assert!(codex_config_has_proxy_command_auth(managed));
+        let cleaned = remove_codex_proxy_command_auth(managed).expect("remove command auth");
+        let parsed: toml::Value = toml::from_str(&cleaned).expect("valid TOML");
+        assert!(
+            parsed
+                .get("model_providers")
+                .and_then(|v| v.get("custom"))
+                .and_then(|v| v.get("auth"))
+                .is_none(),
+            "managed command auth table should be removed"
+        );
+        assert!(!codex_config_has_proxy_command_auth(&cleaned));
+
+        let user_owned = managed.replace("args = [\"PROXY_MANAGED\"]", "args = [\"user-token\"]");
+        assert!(!codex_config_has_proxy_command_auth(&user_owned));
+        let kept = remove_codex_proxy_command_auth(&user_owned).expect("keep user auth");
+        assert!(
+            kept.contains("[model_providers.custom.auth]"),
+            "user-managed auth tables must survive cleanup"
+        );
+    }
+
+    #[test]
+    fn restore_provider_token_backfill_strips_proxy_command_auth() {
+        let mut settings = json!({
+            "auth": {},
+            "config": r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.custom.auth]
+command = "/bin/echo"
+args = ["PROXY_MANAGED"]
+timeout_ms = 5000
+refresh_interval_ms = 300000
+cwd = "/"
+"#
+        });
+        let template = json!({
+            "auth": {"OPENAI_API_KEY": "sk-stored"},
+            "config": r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "Third Party"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+"#
+        });
+
+        restore_codex_provider_token_for_backfill(&mut settings, &template)
+            .expect("restore backfill");
+
+        let restored_config = settings
+            .get("config")
+            .and_then(|v| v.as_str())
+            .expect("config string");
+        let parsed: toml::Value = toml::from_str(restored_config).expect("parse restored config");
+        let provider = parsed
+            .get("model_providers")
+            .and_then(|v| v.get("custom"))
+            .expect("custom provider table");
+        assert!(
+            provider.get("auth").is_none(),
+            "takeover command auth table must not leak into stored provider config"
+        );
+        assert!(
+            provider.get("requires_openai_auth").is_none(),
+            "live-projected requires_openai_auth flip should be dropped without a template value"
+        );
+        assert_eq!(
+            settings
+                .get("auth")
+                .and_then(|v| v.as_object())
+                .map(|o| o.len()),
+            Some(0),
+            "no bearer token means auth.json stays untouched"
         );
     }
 

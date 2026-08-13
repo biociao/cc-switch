@@ -78,9 +78,14 @@ pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxySta
 /// catalog file directly so the format always matches what the current version
 /// of Codex expects.
 ///
-/// Only serves the catalog when the live config.toml still references the
-/// cc-switch–owned `model_catalog_json`, using the same path ownership rules as
-/// Codex live-setting import.
+/// Resolution order:
+/// 1. the `model_catalog_json` pointer in the live config.toml, when it still
+///    references the cc-switch–owned catalog (same ownership rules as Codex
+///    live-setting import);
+/// 2. the default cc-switch catalog path — the proxy-takeover projection
+///    deliberately removes the pointer (a pointer would make Codex short-circuit
+///    into StaticModelsManager and skip this remote fetch entirely), while the
+///    catalog file is still generated for this endpoint.
 pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
     let config_dir = crate::codex_config::get_codex_config_dir();
     let active_catalog_path = match crate::codex_config::read_codex_config_text() {
@@ -90,10 +95,22 @@ pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
         Err(_) => None,
     };
 
-    let catalog = if let Some(catalog_path) =
-        active_catalog_path.as_ref().filter(|path| path.exists())
-    {
-        match crate::codex_config::read_codex_model_catalog_text(catalog_path) {
+    let catalog_path = active_catalog_path
+        .filter(|path| path.exists())
+        .or_else(|| {
+            let default_path = crate::codex_config::get_codex_model_catalog_path();
+            if default_path.exists() {
+                Some(default_path)
+            } else {
+                log::debug!(
+                    "[models] stale guard: catalog not served (no cc-switch catalog on disk)"
+                );
+                None
+            }
+        });
+
+    let catalog = if let Some(catalog_path) = catalog_path {
+        match crate::codex_config::read_codex_model_catalog_text(&catalog_path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or(json!({"models": []})),
             Err(error) => {
                 log::warn!("[models] 拒绝读取越界或过大的目录文件: {error}");
@@ -101,11 +118,6 @@ pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
             }
         }
     } else {
-        if active_catalog_path.is_none() {
-            log::debug!(
-                "[models] stale guard: catalog not served (model_catalog_json not set to cc-switch catalog)"
-            );
-        }
         json!({"models": []})
     };
     Ok(Json(catalog))
@@ -2900,6 +2912,105 @@ mod tests {
         should_use_claude_transform_streaming, transform, upstream_body_parse_error,
     };
     use crate::proxy::ProxyError;
+
+    /// 与 services::proxy 测试同款的 HOME 隔离：get_home_dir 认
+    /// CC_SWITCH_TEST_HOME，handle_models 读真实 ~/.codex 路径时必须隔离。
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: tempfile::TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().expect("failed to create temp home");
+            let original_home = std::env::var("HOME").ok();
+            let original_userprofile = std::env::var("USERPROFILE").ok();
+            let original_test_home = std::env::var("CC_SWITCH_TEST_HOME").ok();
+
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("USERPROFILE", dir.path());
+            std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn handle_models_falls_back_to_default_catalog_without_pointer() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        // 接管投影后的 config.toml：不含 model_catalog_json 指针
+        let takeover_config = r#"model_provider = "deepseek"
+model = "deepseek-v4-flash"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#;
+        crate::config::write_text_file(
+            &crate::codex_config::get_codex_config_path(),
+            takeover_config,
+        )
+        .expect("write takeover config without catalog pointer");
+        crate::config::write_text_file(
+            &crate::codex_config::get_codex_model_catalog_path(),
+            r#"{"models": [{"slug": "deepseek-v4-flash"}]}"#,
+        )
+        .expect("write default catalog file");
+
+        let axum::Json(value) = super::handle_models()
+            .await
+            .expect("handle_models should succeed");
+        let models = value
+            .get("models")
+            .and_then(|v| v.as_array())
+            .expect("models array");
+        assert_eq!(models.len(), 1, "default catalog file should be served");
+        assert_eq!(
+            models[0].get("slug").and_then(|v| v.as_str()),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn handle_models_returns_empty_without_any_catalog() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let axum::Json(value) = super::handle_models()
+            .await
+            .expect("handle_models should succeed");
+        assert_eq!(value, serde_json::json!({ "models": [] }));
+    }
 
     #[test]
     fn body_looks_like_sse_detects_unlabeled_sse_prefixes() {
