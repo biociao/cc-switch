@@ -1335,13 +1335,20 @@ impl ProviderAdapter for ClaudeAdapter {
             ProviderType::OpenRouter => Some(AuthInfo::new(key, AuthStrategy::Bearer)),
             ProviderType::ClaudeAuth => Some(AuthInfo::new(key, AuthStrategy::ClaudeAuth)),
             _ => {
-                // 按 env 中的变量名推断鉴权策略，对齐 Anthropic SDK 语义：
-                // ANTHROPIC_AUTH_TOKEN → Authorization: Bearer
-                // ANTHROPIC_API_KEY    → x-api-key
-                // 其他来源（apiKey 直填等）默认走 x-api-key（Anthropic 官方协议）。
-                let strategy = self
-                    .infer_anthropic_auth_strategy(provider)
-                    .unwrap_or(AuthStrategy::Anthropic);
+                // OpenAI Chat Completions 上游（Opencode Go 等）只认
+                // `Authorization: Bearer`，发 x-api-key 会被 401
+                // （"Missing API key"）。apiFormat=openai_chat 时无视 env
+                // 字段名，一律走 Bearer。
+                let strategy = if self.get_api_format(provider) == "openai_chat" {
+                    AuthStrategy::Bearer
+                } else {
+                    // 按 env 中的变量名推断鉴权策略，对齐 Anthropic SDK 语义：
+                    // ANTHROPIC_AUTH_TOKEN → Authorization: Bearer
+                    // ANTHROPIC_API_KEY    → x-api-key
+                    // 其他来源（apiKey 直填等）默认走 x-api-key（Anthropic 官方协议）。
+                    self.infer_anthropic_auth_strategy(provider)
+                        .unwrap_or(AuthStrategy::Anthropic)
+                };
                 Some(AuthInfo::new(key, strategy))
             }
         }
@@ -1773,6 +1780,47 @@ mod tests {
         let auth = adapter.extract_auth(&provider).unwrap();
         assert_eq!(auth.api_key, "sk-proxy-key");
         assert_eq!(auth.strategy, AuthStrategy::ClaudeAuth);
+    }
+
+    #[test]
+    fn test_extract_auth_openai_chat_forces_bearer_despite_api_key_field() {
+        // Opencode Go 等 OpenAI Chat Completions 上游只认 Bearer；密钥即使存在
+        // ANTHROPIC_API_KEY 字段（默认推断会给 x-api-key → 上游 401
+        // "Missing API key"），apiFormat=openai_chat 时也必须走 Bearer。
+        let adapter = ClaudeAdapter::new();
+        let provider = create_provider_with_meta(
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://opencode.ai/zen/go",
+                    "ANTHROPIC_API_KEY": "oc-test-key"
+                }
+            }),
+            ProviderMeta {
+                api_format: Some("openai_chat".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "oc-test-key");
+        assert_eq!(auth.strategy, AuthStrategy::Bearer);
+    }
+
+    #[test]
+    fn test_extract_auth_anthropic_format_keeps_x_api_key() {
+        // 回归保护：未设置 openai_chat 时，ANTHROPIC_API_KEY 仍按 Anthropic
+        // 官方协议发 x-api-key，不受上面的强制 Bearer 影响。
+        let adapter = ClaudeAdapter::new();
+        let provider = create_provider(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                "ANTHROPIC_API_KEY": "sk-ant-test"
+            }
+        }));
+
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "sk-ant-test");
+        assert_eq!(auth.strategy, AuthStrategy::Anthropic);
     }
 
     /// Regression: a Gemini OAuth credential JSON that carries only a

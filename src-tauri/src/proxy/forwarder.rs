@@ -1446,6 +1446,14 @@ impl RequestForwarder {
         let codex_anthropic_base_is_full_endpoint =
             codex_responses_to_anthropic && base_url_is_full_endpoint(&base_url, "/v1/messages");
 
+        // 同样的防御覆盖 Claude 格式转换路径（见 helper 文档，Opencode Go 场景）
+        let claude_transform_base_is_full_endpoint = claude_transform_base_is_full_endpoint(
+            needs_transform,
+            adapter.name(),
+            resolved_claude_api_format.as_deref(),
+            &base_url,
+        );
+
         let url = if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
             super::gemini_url::resolve_gemini_native_url(
                 &base_url,
@@ -1455,6 +1463,7 @@ impl RequestForwarder {
         } else if is_full_url
             || codex_chat_base_is_full_endpoint
             || codex_anthropic_base_is_full_endpoint
+            || claude_transform_base_is_full_endpoint
         {
             append_query_to_full_url(&base_url, passthrough_query.as_deref())
         } else {
@@ -3009,6 +3018,29 @@ fn base_url_is_full_endpoint(base_url: &str, endpoint_suffix: &str) -> bool {
         .ends_with(endpoint_suffix)
 }
 
+/// Claude 格式转换路径的完整端点防御：OpenAI 兼容供应商的文档通常直接给出
+/// 完整端点（如 Opencode Go 的 `https://opencode.ai/zen/go/v1/chat/completions`），
+/// 用户粘贴为 base URL 且未开"完整 URL"开关时，若不识别会双重拼接
+/// `/v1/chat/completions/v1/chat/completions` → 上游 404。按 api_format 匹配
+/// 转换目标端点后缀；suffix 匹配同时覆盖带 `/v1` 前缀与 Copilot 无前缀的形式。
+fn claude_transform_base_is_full_endpoint(
+    needs_transform: bool,
+    adapter_name: &str,
+    api_format: Option<&str>,
+    base_url: &str,
+) -> bool {
+    if !needs_transform || adapter_name != "Claude" {
+        return false;
+    }
+    match api_format {
+        Some("openai_responses") => base_url_is_full_endpoint(base_url, "/responses"),
+        // gemini_native 的 URL 由 resolve_gemini_native_url 单独处理，不参与此防御
+        Some("gemini_native") => false,
+        // openai_chat（含 Copilot）目标端点均以 /chat/completions 结尾
+        _ => base_url_is_full_endpoint(base_url, "/chat/completions"),
+    }
+}
+
 fn is_codex_client_fingerprint_header(key_str: &str) -> bool {
     matches!(
         key_str,
@@ -4448,6 +4480,70 @@ mod tests {
         assert!(base_url_is_full_endpoint(
             "https://host.example/v1/chat/completions?api-version=2024",
             "/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn claude_transform_full_endpoint_guard_matches_by_api_format() {
+        // Opencode Go 文档给的是完整端点；粘贴为 base URL 时 openai_chat 必须识别，
+        // 否则会拼出 `.../v1/chat/completions/v1/chat/completions` → 404。
+        assert!(claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("openai_chat"),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        ));
+        // 带尾斜杠 / query 也要识别。
+        assert!(claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("openai_chat"),
+            "https://opencode.ai/zen/go/v1/chat/completions/"
+        ));
+        assert!(claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("openai_chat"),
+            "https://host.example/chat/completions?api-version=1"
+        ));
+        // openai_responses 匹配 /responses 后缀。
+        assert!(claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("openai_responses"),
+            "https://host.example/v1/responses"
+        ));
+        // 短 base URL（正常配置）不识别，仍走 build_url 拼接。
+        assert!(!claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("openai_chat"),
+            "https://opencode.ai/zen/go"
+        ));
+        assert!(!claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("openai_chat"),
+            "https://opencode.ai/zen/go/v1"
+        ));
+        // 不需要转换 / 非 Claude 适配器 / gemini_native 一律不参与。
+        assert!(!claude_transform_base_is_full_endpoint(
+            false,
+            "Claude",
+            Some("openai_chat"),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        ));
+        assert!(!claude_transform_base_is_full_endpoint(
+            true,
+            "Codex",
+            Some("openai_chat"),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        ));
+        assert!(!claude_transform_base_is_full_endpoint(
+            true,
+            "Claude",
+            Some("gemini_native"),
+            "https://host.example/v1/chat/completions"
         ));
     }
 
