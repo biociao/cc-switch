@@ -3075,7 +3075,11 @@ impl ProxyService {
         let seeded_config = if config_text.trim().is_empty() {
             CODEX_AGGREGATE_SEED_TOML.to_string()
         } else {
-            config_text
+            // 非空但可能缺 model_provider 结构（早期版本的顶层 fallback 会把
+            // base_url/wire_api 写成顶层死键，Codex 完全不经过本地代理）：
+            // 先补齐 provider 结构并清除死键，再走投影。
+            crate::codex_config::ensure_codex_aggregate_provider_structure(&config_text)
+                .map_err(|e| format!("修复 Codex 聚合供应商配置结构失败: {e}"))?
         };
         // 聚合 provider 无上游模型，该函数不会写 model，仅取 base_url/wire_api。
         let mut projected = Self::apply_codex_proxy_toml_config_for_provider(
@@ -3990,6 +3994,68 @@ mod tests {
             .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
             .collect();
         assert_eq!(names, ["gpt-5", "gpt-5.1"]);
+    }
+
+    #[test]
+    fn codex_aggregate_takeover_repairs_config_missing_provider_structure() {
+        // 回归：早期版本在 config 缺少 model_provider 结构时把 base_url/wire_api
+        // 写成顶层死键（Codex 只认 [model_providers.<id>] 表内字段），请求绕过
+        // 本地代理直连默认端点，代理日志里没有任何请求记录。
+        let provider = codex_aggregate_provider(
+            "agg",
+            &[("codex-mini-latest", "minimax", "MiniMax-M2.7-highspeed")],
+        );
+
+        let stale_config = r#"base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+model = "codex-mini-latest"
+experimental_bearer_token = "PROXY_MANAGED"
+
+[mcp_servers.node_repl]
+command = "node_repl"
+"#;
+        let mut live_config = json!({ "config": stale_config });
+        ProxyService::apply_codex_takeover_fields_for_provider(
+            &mut live_config,
+            "http://127.0.0.1:15721",
+            &provider,
+        )
+        .expect("codex aggregate takeover fields");
+
+        let config = live_config
+            .get("config")
+            .and_then(|value| value.as_str())
+            .expect("config should exist");
+
+        // 补齐了 provider 结构，且 base_url/wire_api 只出现在表内（顶层死键已清除）
+        let table_header = "[model_providers.cc-switch-aggregate]";
+        let table_pos = config
+            .find(table_header)
+            .unwrap_or_else(|| panic!("missing {table_header} in {config}"));
+        assert!(
+            config.contains("model_provider = \"cc-switch-aggregate\""),
+            "got {config}"
+        );
+        let base_url_pos = config
+            .find("base_url")
+            .unwrap_or_else(|| panic!("missing base_url in {config}"));
+        assert!(
+            base_url_pos > table_pos,
+            "base_url must only appear inside {table_header}, got {config}"
+        );
+        let wire_api_pos = config
+            .find("wire_api")
+            .unwrap_or_else(|| panic!("missing wire_api in {config}"));
+        assert!(
+            wire_api_pos > table_pos,
+            "wire_api must only appear inside {table_header}, got {config}"
+        );
+        // 既有配置段保留，model 仍是顶层字段
+        assert!(config.contains("[mcp_servers.node_repl]"), "got {config}");
+        let model_pos = config
+            .find("model = \"codex-mini-latest\"")
+            .unwrap_or_else(|| panic!("missing model in {config}"));
+        assert!(model_pos < table_pos, "model must stay top-level: {config}");
     }
 
     #[tokio::test]

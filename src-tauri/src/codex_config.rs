@@ -1941,6 +1941,62 @@ fn apply_codex_proxy_command_auth_projection(
     Ok(doc.to_string())
 }
 
+/// 聚合供应商接管投影的前置修复：聚合 provider 的 settings 是占位空配置，但早期
+/// 版本在其 config 缺少 `model_provider` 结构时，把 `base_url`/`wire_api` 经
+/// `update_codex_toml_field` 的顶层 fallback 写成了顶层字段——Codex 只认
+/// `[model_providers.<id>]` 表下的这两个键，顶层的是死配置，客户端会直连默认
+/// OpenAI 端点、完全不经过本地代理（表现为代理日志里没有任何请求）。
+///
+/// 这里确保配置带合法的 provider 结构（存在自定义 `model_provider` 则沿用，
+/// 否则播种 `cc-switch-aggregate`），并清掉顶层残留死键。后续的
+/// `apply_codex_proxy_toml_config_for_provider` 与 command auth 投影再往里填
+/// base_url/wire_api/auth。
+pub fn ensure_codex_aggregate_provider_structure(config_text: &str) -> Result<String, AppError> {
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    // 旧投影 fallback 写出的顶层死键，直接清除（model 是合法的顶层键，不动）。
+    doc.as_table_mut().remove("base_url");
+    doc.as_table_mut().remove("wire_api");
+
+    let provider_id = active_codex_model_provider_id(&doc)
+        .filter(|id| is_custom_codex_model_provider_id(id))
+        .unwrap_or_else(|| "cc-switch-aggregate".to_string());
+    doc["model_provider"] = toml_edit::value(provider_id.clone());
+
+    // 与 update_codex_toml_field 一致：用户手写成 inline table 时 as_table_mut
+    // 拿不到，必须用 as_table_like_mut。
+    if doc
+        .get("model_providers")
+        .is_none_or(|item| item.as_table_like().is_none())
+    {
+        doc["model_providers"] = toml_edit::table();
+    }
+    if let Some(model_providers) = doc
+        .get_mut("model_providers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        if !model_providers.contains_key(&provider_id) {
+            model_providers.insert(&provider_id, toml_edit::table());
+        }
+        if let Some(provider_table) = model_providers
+            .get_mut(&provider_id)
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            if provider_table.get("name").is_none() {
+                provider_table.insert("name", toml_edit::value("cc-switch Aggregate"));
+            }
+            // 与 CODEX_AGGREGATE_SEED_TOML 保持一致；接管投影写 command auth 表时
+            // 会翻成 false（Codex 0.144+ 把 true 视为强制 ChatGPT OAuth）。
+            if provider_table.get("requires_openai_auth").is_none() {
+                provider_table.insert("requires_openai_auth", toml_edit::value(true));
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
 /// Read the current Codex live settings as a `{ auth, config }` object.
 ///
 /// Missing `auth.json` collapses to `{}` so a config-only third-party install
@@ -4412,6 +4468,74 @@ wire_api = "responses"
             Some("freeform"),
             "ProxyChat must preserve apply_patch_tool_type (no native stripping)"
         );
+    }
+
+    #[test]
+    fn ensure_aggregate_provider_structure_repairs_stale_top_level_keys() {
+        // 早期版本的顶层 fallback 会留下死键 base_url/wire_api（Codex 只认
+        // [model_providers.<id>] 表内字段），且没有 model_provider 结构。
+        let input = r#"base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+model = "codex-mini-latest"
+
+[mcp_servers.node_repl]
+command = "node_repl"
+"#;
+        let result = ensure_codex_aggregate_provider_structure(input).unwrap();
+        let doc = result.parse::<DocumentMut>().unwrap();
+
+        assert_eq!(
+            doc.get("model_provider").and_then(|v| v.as_str()),
+            Some("cc-switch-aggregate")
+        );
+        // 顶层死键已清除
+        assert!(doc.get("base_url").is_none());
+        assert!(doc.get("wire_api").is_none());
+        // model 是合法顶层键，保留
+        assert_eq!(
+            doc.get("model").and_then(|v| v.as_str()),
+            Some("codex-mini-latest")
+        );
+        let table = doc
+            .get("model_providers")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("cc-switch-aggregate"))
+            .and_then(|v| v.as_table())
+            .expect("provider table should exist");
+        assert_eq!(
+            table.get("name").and_then(|v| v.as_str()),
+            Some("cc-switch Aggregate")
+        );
+        assert_eq!(
+            table.get("requires_openai_auth").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // 既有配置段保留
+        assert!(result.contains("[mcp_servers.node_repl]"));
+        // 幂等
+        let again = ensure_codex_aggregate_provider_structure(&result).unwrap();
+        assert_eq!(result, again);
+    }
+
+    #[test]
+    fn ensure_aggregate_provider_structure_preserves_existing_provider_id() {
+        let input = r#"model_provider = "custom"
+model = "glm-5.2"
+
+[model_providers.custom]
+name = "Zhipu"
+"#;
+        let result = ensure_codex_aggregate_provider_structure(input).unwrap();
+        let doc = result.parse::<DocumentMut>().unwrap();
+
+        assert_eq!(
+            doc.get("model_provider").and_then(|v| v.as_str()),
+            Some("custom")
+        );
+        assert!(result.contains("[model_providers.custom]"));
+        assert!(!result.contains("cc-switch-aggregate"));
+        // 已有 name 不被覆盖
+        assert!(result.contains("name = \"Zhipu\""));
     }
 
     #[test]
