@@ -7,6 +7,7 @@
 use crate::error::AppError;
 
 /// Codex 桌面端的 macOS bundle id。
+#[cfg(target_os = "macos")]
 const CODEX_BUNDLE_ID: &str = "com.openai.codex";
 
 #[derive(Debug, Clone, Copy, Default)]

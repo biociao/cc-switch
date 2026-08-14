@@ -555,7 +555,6 @@ fn codex_catalog_input_modalities(
 /// 模型（见 proxy::providers::codex 的 catalog 映射）。
 pub(crate) fn codex_catalog_surface_slug(display_name: &str) -> String {
     display_name
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join("-")
