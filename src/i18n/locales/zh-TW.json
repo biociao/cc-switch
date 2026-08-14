@@ -1412,6 +1412,8 @@
     "modelMappingTitle": "模型映射",
     "modelMappingHint": "產生 Codex model_catalog_json，讓 /model 指令顯示這些第三方模型名；表中條目按填寫內容原樣儲存。修改後需要重新啟動 Codex 才能重新整理模型清單。",
     "addCatalogModel": "新增模型",
+    "catalogRowMissingModel": "模型映射第 {{rows}} 行缺少「實際請求模型」，請補齊或刪除該行後再儲存",
+    "catalogRowDuplicateModel": "模型映射的「實際請求模型」 {{models}} 重複，請去除重複後再儲存",
     "catalogDisplayName": "顯示名稱",
     "catalogModelId": "模型 ID",
     "catalogColumnDisplay": "選單顯示名",

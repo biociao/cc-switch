@@ -1400,6 +1400,48 @@ function ProviderFormFull({
     if (appId === "codex") {
       try {
         const authJson = JSON.parse(codexAuth);
+        // 静默丢行防护：normalize 会丢弃"实际请求模型"为空的行和重复行，
+        // 用户表现为"保存后映射丢失"。部分填写的行/重复行直接拦截报错。
+        if (category !== "official") {
+          const incompleteRows: number[] = [];
+          const seenModels = new Set<string>();
+          const duplicatedModels: string[] = [];
+          codexCatalogModels.forEach((item, idx) => {
+            const model = item.model.trim();
+            if (!model) {
+              const hasOtherContent =
+                Boolean(item.displayName?.trim()) ||
+                Boolean(String(item.contextWindow ?? "").trim());
+              if (hasOtherContent) incompleteRows.push(idx + 1);
+              return;
+            }
+            if (seenModels.has(model)) {
+              if (!duplicatedModels.includes(model)) {
+                duplicatedModels.push(model);
+              }
+            } else {
+              seenModels.add(model);
+            }
+          });
+          if (incompleteRows.length > 0) {
+            toast.error(
+              t("codexConfig.catalogRowMissingModel", {
+                rows: incompleteRows.join(", "),
+                defaultValue: `模型映射第 ${incompleteRows.join(", ")} 行缺少“实际请求模型”，请补全或删除该行后再保存`,
+              }),
+            );
+            return;
+          }
+          if (duplicatedModels.length > 0) {
+            toast.error(
+              t("codexConfig.catalogRowDuplicateModel", {
+                models: duplicatedModels.join(", "),
+                defaultValue: `模型映射的“实际请求模型” ${duplicatedModels.join(", ")} 重复，请去重后再保存`,
+              }),
+            );
+            return;
+          }
+        }
         let normalizedCodexConfig =
           category !== "official" && (codexConfig ?? "").trim()
             ? setCodexWireApi(codexConfig ?? "", "responses")

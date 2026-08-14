@@ -1425,6 +1425,8 @@
     "modelMappingTitle": "Model Mapping",
     "modelMappingHint": "Generates Codex model_catalog_json so /model can show these third-party model names; entries are saved exactly as listed. Codex must be restarted to refresh the model list after changes.",
     "addCatalogModel": "Add Model",
+    "catalogRowMissingModel": "Model mapping row(s) {{rows}} are missing the actual request model. Complete or remove them before saving.",
+    "catalogRowDuplicateModel": "The actual request model {{models}} is duplicated in the model mapping. Deduplicate before saving.",
     "catalogDisplayName": "Display Name",
     "catalogDisplayNamePlaceholder": "e.g., DeepSeek V4 Flash",
     "catalogModelId": "Model ID",

@@ -1425,6 +1425,8 @@
     "modelMappingTitle": "模型映射",
     "modelMappingHint": "生成 Codex model_catalog_json，让 /model 命令显示这些第三方模型名；表中条目按填写内容原样保存。修改后需要重启 Codex 才能刷新模型列表。",
     "addCatalogModel": "添加模型",
+    "catalogRowMissingModel": "模型映射第 {{rows}} 行缺少“实际请求模型”，请补全或删除该行后再保存",
+    "catalogRowDuplicateModel": "模型映射的“实际请求模型” {{models}} 重复，请去重后再保存",
     "catalogDisplayName": "显示名称",
     "catalogDisplayNamePlaceholder": "例如: DeepSeek V4 Flash",
     "catalogModelId": "模型 ID",

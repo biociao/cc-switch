@@ -1420,6 +1420,8 @@
     "modelMappingTitle": "モデルマッピング",
     "modelMappingHint": "Codex model_catalog_json を生成し、/model コマンドでこれらの第三者モデル名を表示できるようにします。リストの内容はそのまま保存されます。変更後、モデルリストを更新するには Codex の再起動が必要です。",
     "addCatalogModel": "モデルを追加",
+    "catalogRowMissingModel": "モデルマッピングの {{rows}} 行目に「実際のリクエストモデル」がありません。入力するか行を削除してから保存してください。",
+    "catalogRowDuplicateModel": "モデルマッピングの「実際のリクエストモデル」 {{models}} が重複しています。重複を解消してから保存してください。",
     "catalogDisplayName": "表示名",
     "catalogDisplayNamePlaceholder": "例: DeepSeek V4 Flash",
     "catalogModelId": "モデル ID",
