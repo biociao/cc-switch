@@ -23,14 +23,14 @@ const expectedChatPresets = new Map<
     "Zhipu GLM",
     {
       baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
-      contextWindows: { "glm-5.2": 200000 },
+      contextWindows: { "glm-5.2": 200000, "glm-5.1": 200000 },
     },
   ],
   [
     "Zhipu GLM en",
     {
       baseUrl: "https://api.z.ai/api/coding/paas/v4",
-      contextWindows: { "glm-5.2": 200000 },
+      contextWindows: { "glm-5.2": 200000, "glm-5.1": 200000 },
     },
   ],
   [
@@ -175,8 +175,26 @@ describe("Codex Chat provider presets", () => {
         },
       ],
       ["Longcat", { contextWindows: { "LongCat-2.0": 1048576 } }],
-      ["MiniMax", { contextWindows: { "MiniMax-M3": 1000000 } }],
-      ["MiniMax en", { contextWindows: { "MiniMax-M3": 1000000 } }],
+      [
+        "MiniMax",
+        {
+          contextWindows: {
+            "MiniMax-M3": 1000000,
+            "MiniMax-M2.7": 204800,
+            "MiniMax-M2.7-highspeed": 204800,
+          },
+        },
+      ],
+      [
+        "MiniMax en",
+        {
+          contextWindows: {
+            "MiniMax-M3": 1000000,
+            "MiniMax-M2.7": 204800,
+            "MiniMax-M2.7-highspeed": 204800,
+          },
+        },
+      ],
       [
         "Xiaomi MiMo",
         {

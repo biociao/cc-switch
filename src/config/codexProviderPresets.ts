@@ -974,6 +974,7 @@ wire_api = "responses"`,
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
       { model: "glm-5.2", displayName: "GPT-5.6-Sol", contextWindow: 200000 },
+      { model: "glm-5.1", displayName: "GPT-5.5", contextWindow: 200000 },
     ]),
     codexChatReasoning: {
       supportsThinking: true,
@@ -1000,6 +1001,7 @@ wire_api = "responses"`,
     apiFormat: "openai_chat",
     modelCatalog: modelCatalog([
       { model: "glm-5.2", displayName: "GPT-5.6-Sol", contextWindow: 200000 },
+      { model: "glm-5.1", displayName: "GPT-5.5", contextWindow: 200000 },
     ]),
     codexChatReasoning: {
       supportsThinking: true,
@@ -1252,6 +1254,24 @@ wire_api = "responses"`,
         baseInstructions:
           "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
       },
+      {
+        model: "MiniMax-M2.7",
+        displayName: "GPT-5.5",
+        contextWindow: 204800,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+        baseInstructions:
+          "You are Codex, a coding agent based on MiniMax-M2.7. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      },
+      {
+        model: "MiniMax-M2.7-highspeed",
+        displayName: "GPT-5.2",
+        contextWindow: 204800,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+        baseInstructions:
+          "You are Codex, a coding agent based on MiniMax-M2.7. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      },
     ]),
     category: "cn_official",
     partnerPromotionKey: "minimax_cn",
@@ -1286,6 +1306,24 @@ wire_api = "responses"`,
         inputModalities: ["text", "image"],
         baseInstructions:
           "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      },
+      {
+        model: "MiniMax-M2.7",
+        displayName: "GPT-5.5",
+        contextWindow: 204800,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+        baseInstructions:
+          "You are Codex, a coding agent based on MiniMax-M2.7. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      },
+      {
+        model: "MiniMax-M2.7-highspeed",
+        displayName: "GPT-5.2",
+        contextWindow: 204800,
+        supportsParallelToolCalls: true,
+        inputModalities: ["text", "image"],
+        baseInstructions:
+          "You are Codex, a coding agent based on MiniMax-M2.7. You and the user share the same workspace and collaborate to achieve the user's goals.",
       },
     ]),
     category: "cn_official",
