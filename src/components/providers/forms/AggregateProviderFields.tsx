@@ -99,9 +99,12 @@ export function AggregateProviderFields({
   };
   const patchRow = (index: number, patch: Partial<AggregateCustomRouteRow>) => {
     updateRows(
-      rows.map((row, rowIndex) =>
-        rowIndex === index ? { ...row, ...patch } : row,
-      ),
+      rows.map((row, rowIndex) => {
+        if (rowIndex !== index) return row;
+        // 用户碰过的行不再是"未启用模板"：保存时按普通行校验（部分填写会报错）
+        const { template: _template, ...userRow } = row;
+        return { ...userRow, ...patch };
+      }),
     );
   };
 
@@ -157,7 +160,7 @@ export function AggregateProviderFields({
             {appId === "codex"
               ? t("providerForm.aggregate.hintCodex", {
                   defaultValue:
-                    "Route requests to different providers by exact request model name. Proxy takeover is required.",
+                    "Route requests to different providers by exact request model name. Proxy takeover is required. New aggregate providers are pre-filled with Codex native model names — pick a target provider and upstream model to enable a row; unconfigured rows are not saved.",
                 })
               : t("providerForm.aggregate.hint", {
                   defaultValue:

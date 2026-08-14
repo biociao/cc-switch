@@ -1040,7 +1040,7 @@
     "aggregate": {
       "title": "Aggregate provider",
       "hint": "Route Haiku, Sonnet, Opus, and Fable requests to models from different providers. Proxy takeover is required.",
-      "hintCodex": "Route requests to different providers by exact request model name. Proxy takeover is required.",
+      "hintCodex": "Route requests to different providers by exact request model name. Proxy takeover is required. New aggregate providers are pre-filled with Codex native model names — pick a target provider and upstream model to enable a row; unconfigured rows are not saved.",
       "tier": "Model tier",
       "targetProvider": "Target provider",
       "targetModel": "Upstream model",

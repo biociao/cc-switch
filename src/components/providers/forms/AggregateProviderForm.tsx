@@ -17,6 +17,7 @@ import { AggregateProviderFields } from "./AggregateProviderFields";
 import type { ProviderFormValues } from "./ProviderForm";
 import {
   AGGREGATE_SETTINGS_CONFIG,
+  codexAggregateTemplateRows,
   customRoutesToRows,
   validateAggregateRoutes,
   type AggregateCustomRouteRow,
@@ -63,9 +64,17 @@ export function AggregateProviderForm({
     () => initialData?.meta?.aggregateRoutes ?? {},
   );
   // Codex 聚合路由的有序行态（Record 无法保留重复 key，提交校验依赖行态）
+  // 新建时预填 Codex 原生模型名模板行，用户只需 pick 目标供应商与上游模型；
+  // 编辑时以已保存路由为准，不补模板。
   const [aggregateCustomRows, setAggregateCustomRows] = useState<
     AggregateCustomRouteRow[]
-  >(() => customRoutesToRows(initialData?.meta?.aggregateRoutes?.custom));
+  >(() =>
+    initialData
+      ? customRoutesToRows(initialData?.meta?.aggregateRoutes?.custom)
+      : appId === "codex"
+        ? codexAggregateTemplateRows()
+        : [],
+  );
 
   const form = useForm<ProviderFormData>({
     resolver: zodResolver(providerSchema),

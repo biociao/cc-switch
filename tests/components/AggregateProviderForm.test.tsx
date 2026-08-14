@@ -171,4 +171,83 @@ describe("AggregateProviderForm", () => {
     );
     expect(handleSubmit).not.toHaveBeenCalled();
   });
+
+  it("新建 codex 聚合供应商时预填原生模型名模板行", () => {
+    render(
+      <AggregateProviderForm
+        appId="codex"
+        submitLabel="save"
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        availableProviders={[targetProvider("kimi", "Kimi")]}
+      />,
+    );
+
+    const expectedKeys = [
+      "gpt-5.6",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.4-mini-fast",
+      "codex-mini-latest",
+    ];
+    expectedKeys.forEach((key, index) => {
+      const input = document.getElementById(
+        `aggregate-custom-${index}-key`,
+      ) as HTMLInputElement;
+      expect(input?.value).toBe(key);
+    });
+  });
+
+  it("新建 codex 聚合时未配置任何模板行，保存报空路由而不是行不完整", async () => {
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AggregateProviderForm
+        appId="codex"
+        submitLabel="save"
+        onSubmit={handleSubmit}
+        onCancel={vi.fn()}
+        availableProviders={[targetProvider("kimi", "Kimi")]}
+      />,
+    );
+
+    fillName("Agg");
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+
+    await waitFor(() =>
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        expect.stringContaining("Configure at least one aggregate route."),
+      ),
+    );
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  it("编辑已有 codex 聚合供应商时不补预填模板行", () => {
+    render(
+      <AggregateProviderForm
+        appId="codex"
+        submitLabel="save"
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        availableProviders={[targetProvider("kimi", "Kimi")]}
+        initialData={{
+          name: "Agg",
+          meta: {
+            aggregateRoutes: {
+              custom: {
+                "gpt-5.5": { providerId: "kimi", model: "k2" },
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    // 只有已保存的一行，没有额外模板行
+    expect(
+      document.getElementById("aggregate-custom-0-key"),
+    ).toBeInTheDocument();
+    expect(document.getElementById("aggregate-custom-1-key")).toBeNull();
+  });
 });

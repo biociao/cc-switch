@@ -87,6 +87,12 @@ export interface AggregateCustomRouteRow {
   key: string;
   providerId: string;
   model: string;
+  /**
+   * 新建时预填的模板行（key 已填 Codex 原生模型名，等待用户选供应商/模型）。
+   * 用户一旦改动该行任意字段，UI 层会清掉此标记；保存校验时仍带标记且
+   * provider/model 均未填的行视为"未启用的模板"，跳过而不是报 incomplete。
+   */
+  template?: boolean;
 }
 
 /** custom Record -> 有序行列表（编辑时回填表单） */
@@ -182,6 +188,11 @@ export function validateAggregateRoutes(
     }
 
     for (const row of rows) {
+      // 未动过的预填模板行（key 为预填模型名，provider/model 均未选）跳过校验，
+      // 归一化阶段也会被丢弃——用户没被强迫配置每一个预填模型。
+      if (row.template === true && !row.providerId.trim() && !row.model.trim()) {
+        continue;
+      }
       const filled = [
         row.key.trim(),
         row.providerId.trim(),
@@ -272,6 +283,19 @@ export const CODEX_OFFICIAL_MODEL_SUGGESTIONS: FetchedModel[] = [
   "gpt-5.4-mini-fast",
   "codex-mini-latest",
 ].map((id) => ({ id, ownedBy: "OpenAI" }));
+
+/**
+ * 新建 Codex 聚合供应商时的预填模板行：key 预填 Codex 原生模型名，
+ * 用户只需为需要的行选择目标供应商与上游模型；未配置的行保存时自动跳过。
+ */
+export function codexAggregateTemplateRows(): AggregateCustomRouteRow[] {
+  return CODEX_OFFICIAL_MODEL_SUGGESTIONS.map((suggestion) => ({
+    key: suggestion.id,
+    providerId: "",
+    model: "",
+    template: true,
+  }));
+}
 
 /**
  * Codex 目标 provider 的「获取模型列表」连接信息：
