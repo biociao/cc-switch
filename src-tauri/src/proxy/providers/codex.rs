@@ -10,7 +10,7 @@ use crate::provider::{CodexChatReasoningConfig, Provider};
 use crate::proxy::error::ProxyError;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
 
@@ -276,22 +276,54 @@ pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
         })
 }
 
-fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
-    provider
+/// modelCatalog 的请求模型映射表：picker 回传的 surface slug（显示名小写、
+/// 空白转短横线，与生成目录的 slug 规则一致）和真实模型 id 都映射到真实
+/// 上游模型 id。surface slug 后插入覆盖同名真实 id——picker 语义优先。
+fn codex_provider_catalog_model_map(provider: &Provider) -> HashMap<String, String> {
+    let Some(models) = provider
         .settings_config
         .get("modelCatalog")
         .and_then(|catalog| catalog.get("models"))
         .and_then(|models| models.as_array())
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    else {
+        return HashMap::new();
+    };
+
+    let mut map = HashMap::new();
+    for model_config in models {
+        let Some(model) = model_config
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        else {
+            continue;
+        };
+        map.entry(model.to_string()).or_insert_with(|| model.to_string());
+    }
+    for model_config in models {
+        let Some(model) = model_config
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        else {
+            continue;
+        };
+        let display_name = model_config
+            .get("displayName")
+            .or_else(|| model_config.get("display_name"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        if let Some(display_name) = display_name {
+            let surface = crate::codex_config::codex_catalog_surface_slug(display_name);
+            if !surface.is_empty() && surface != model {
+                map.insert(surface, model.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// For Codex Chat providers, ensure the request uses the configured upstream
@@ -310,15 +342,21 @@ pub fn apply_codex_chat_upstream_model(
 /// the chat gating check. Reused by the anthropic conversion path (the forwarder has
 /// already confirmed this provider uses anthropic).
 pub fn apply_codex_upstream_model(provider: &Provider, body: &mut JsonValue) -> Option<String> {
-    let catalog_model_ids = codex_provider_catalog_model_ids(provider);
+    let catalog_model_map = codex_provider_catalog_model_map(provider);
     if let Some(request_model) = body
         .get("model")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|model| !model.is_empty())
     {
-        if catalog_model_ids.contains(request_model) {
-            return Some(request_model.to_string());
+        // catalog 命中（picker surface slug 或真实模型 id）→ 映射回真实上游模型；
+        // 未命中回退到供应商默认上游模型。
+        if let Some(upstream) = catalog_model_map.get(request_model) {
+            let upstream = upstream.clone();
+            if upstream != request_model {
+                body["model"] = JsonValue::String(upstream.clone());
+            }
+            return Some(upstream);
         }
     }
 
@@ -1195,6 +1233,71 @@ wire_api = "anthropic"
         assert_eq!(
             body.get("model").and_then(|v| v.as_str()),
             Some("claude-opus-4-1[1m]")
+        );
+    }
+
+    #[test]
+    fn test_apply_codex_upstream_model_maps_picker_surface_slug_to_real_model() {
+        // picker 目录条目的 slug 跟随显示名（"GPT-5.6-Sol" → "gpt-5.6-sol"），
+        // Codex 请求原样回传 slug；代理必须映射回真实上游模型 id，
+        // 否则所有 picker 选择都会落到默认模型上。
+        let provider = create_provider(json!({
+            "config": "model = \"MiniMax-M3\"\n",
+            "modelCatalog": {
+                "models": [
+                    { "model": "MiniMax-M3", "displayName": "GPT-5.6-Sol" },
+                    { "model": "MiniMax-M2.7", "displayName": "GPT-5.5" }
+                ]
+            }
+        }));
+
+        let mut body = json!({ "model": "gpt-5.5" });
+        let result = apply_codex_upstream_model(&provider, &mut body);
+        assert_eq!(result.as_deref(), Some("MiniMax-M2.7"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("MiniMax-M2.7")
+        );
+    }
+
+    #[test]
+    fn test_apply_codex_upstream_model_keeps_real_model_id_passthrough() {
+        // 真实模型 id 直通（CLI / 旧目录行为），不做改写
+        let provider = create_provider(json!({
+            "config": "model = \"MiniMax-M3\"\n",
+            "modelCatalog": {
+                "models": [
+                    { "model": "MiniMax-M3", "displayName": "GPT-5.6-Sol" }
+                ]
+            }
+        }));
+
+        let mut body = json!({ "model": "MiniMax-M3" });
+        let result = apply_codex_upstream_model(&provider, &mut body);
+        assert_eq!(result.as_deref(), Some("MiniMax-M3"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("MiniMax-M3")
+        );
+    }
+
+    #[test]
+    fn test_apply_codex_upstream_model_falls_back_for_unknown_model() {
+        let provider = create_provider(json!({
+            "config": "model = \"MiniMax-M3\"\n",
+            "modelCatalog": {
+                "models": [
+                    { "model": "MiniMax-M3", "displayName": "GPT-5.6-Sol" }
+                ]
+            }
+        }));
+
+        let mut body = json!({ "model": "gpt-5.4" });
+        let result = apply_codex_upstream_model(&provider, &mut body);
+        assert_eq!(result.as_deref(), Some("MiniMax-M3"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("MiniMax-M3")
         );
     }
 

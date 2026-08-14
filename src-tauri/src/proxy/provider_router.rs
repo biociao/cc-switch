@@ -259,7 +259,8 @@ impl ProviderRouter {
     ///   下游 model_mapper 因此会把任意档别名统一映射到该模型；
     /// - Codex：将 `settings_config.model` 设为路由的上游模型名
     ///   （`codex_provider_upstream_model` 优先读它），并移除 `modelCatalog`，
-    ///   否则 `apply_codex_upstream_model` 的 catalog 白名单会跳过上流模型改写。
+    ///   否则 `apply_codex_upstream_model` 的 catalog 映射会命中目标自身条目、
+    ///   跳过上流模型改写。
     ///
     /// 目标 provider 的端点/认证/归一化逻辑全部复用。
     fn synthesize_routed_provider(target: &Provider, model: &str, app_type: &str) -> Provider {

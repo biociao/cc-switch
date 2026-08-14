@@ -1220,10 +1220,12 @@ impl RequestForwarder {
             super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
         }
 
-        // Codex 原生 Responses 透传路径也要改写 model：桌面 picker 会发送合并
-        // 目录里的内置 GPT 模型名，第三方上游不认识会直接报错（HTTP 500）。
-        // catalog 白名单内的选择原样直通，其余回退到供应商默认上游模型；
-        // chat/anthropic 转换路径的后续调用幂等无害。
+        // Codex 原生 Responses 透传路径也要改写 model：picker 目录条目的 slug
+        // 跟随菜单显示名（与内置官方条目合并去重），Codex 回传的是 surface
+        // slug 而非真实模型 id，第三方上游不认识会报错（HTTP 500）。
+        // apply_codex_upstream_model 将 surface slug / 真实 id 映射回真实上游
+        // 模型，目录外模型回退到供应商默认上游模型；chat/anthropic 转换路径的
+        // 后续调用幂等无害。
         if matches!(app_type, AppType::Codex) {
             super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
         }

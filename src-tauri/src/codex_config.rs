@@ -548,6 +548,29 @@ fn codex_catalog_input_modalities(
     modalities.iter().map(|item| (*item).to_string()).collect()
 }
 
+/// 菜单显示名 → Codex picker slug。Codex 把内置官方模型与远端目录条目按
+/// slug 去重合并（远端覆盖内置），slug 必须与官方命名一致（小写、空白转
+/// 短横线）才能顶替内置条目——否则 picker 里会出现两个同名条目，用户选到
+/// 内置条目时请求绕过映射。请求时 Codex 原样回传 slug，代理据此映射回真实
+/// 模型（见 proxy::providers::codex 的 catalog 映射）。
+pub(crate) fn codex_catalog_surface_slug(display_name: &str) -> String {
+    display_name
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_lowercase()
+}
+
+/// 目录条目的 picker slug：用户填了显示名就用 surface slug（与内置官方模型
+/// 合并去重），没填就退回真实模型 id（旧行为，slug 即模型名）。
+fn codex_catalog_entry_slug(spec: &CodexCatalogModelSpec) -> String {
+    spec.display_name
+        .as_deref()
+        .map(codex_catalog_surface_slug)
+        .unwrap_or_else(|| spec.model.clone())
+}
+
 fn codex_catalog_model_entry(
     template: &Value,
     spec: &CodexCatalogModelSpec,
@@ -562,7 +585,7 @@ fn codex_catalog_model_entry(
 
     let display_name = spec.display_name.as_deref().unwrap_or(&spec.model);
     let context_window = spec.context_window.unwrap_or(default_context_window);
-    entry_obj.insert("slug".to_string(), json!(spec.model));
+    entry_obj.insert("slug".to_string(), json!(codex_catalog_entry_slug(spec)));
     entry_obj.insert("display_name".to_string(), json!(display_name));
     entry_obj.insert("description".to_string(), json!(display_name));
     entry_obj.insert("context_window".to_string(), json!(context_window));
@@ -1063,7 +1086,7 @@ fn codex_vendor_catalog_model_entry(
 
     if matched.is_none() {
         let display_name = spec.display_name.as_deref().unwrap_or(&spec.model);
-        entry_obj.insert("slug".to_string(), json!(spec.model));
+        entry_obj.insert("slug".to_string(), json!(codex_catalog_entry_slug(spec)));
         entry_obj.insert("display_name".to_string(), json!(display_name));
         entry_obj.insert("description".to_string(), json!(display_name));
         entry_obj.insert("priority".to_string(), json!(1000 + priority));
@@ -1071,7 +1094,13 @@ fn codex_vendor_catalog_model_entry(
 
     // Explicit user overrides win over the official entry; absent values keep
     // the vendor's declarations (context window, modalities, harness, ...).
+    // slug 也要跟随显示名改成 surface slug：picker 按 slug 去重，slug 留在
+    // 真实模型 id 会让内置官方条目与用户条目同名并存，选错即绕过映射。
     if let Some(display_name) = spec.display_name.as_deref() {
+        entry_obj.insert(
+            "slug".to_string(),
+            json!(codex_catalog_surface_slug(display_name)),
+        );
         entry_obj.insert("display_name".to_string(), json!(display_name));
     }
     if let Some(context_window) = spec.context_window {
@@ -1314,6 +1343,43 @@ fn set_codex_native_web_search_field(config_text: &str, disable: bool) -> Result
     Ok(doc.to_string())
 }
 
+/// 生成目录后，顶层默认 `model` 若仍是某条目的真实模型 id，改写为该条目的
+/// picker surface slug。目录 slug 跟随显示名之后，Codex 以 slug 解析模型
+/// 能力并原样回传；顶层保留真实 id 会解析不到目录条目（且与 picker 选择
+/// 行为不一致）。代理侧会把 surface slug 映射回真实模型，上游不受影响。
+fn rewrite_codex_default_model_to_surface_slug(
+    config_text: &str,
+    specs: &[CodexCatalogModelSpec],
+) -> Result<String, AppError> {
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    let current = doc
+        .get("model")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
+    let Some(current) = current else {
+        return Ok(config_text.to_string());
+    };
+
+    let surface = specs.iter().find_map(|spec| {
+        if spec.model != current {
+            return None;
+        }
+        let slug = codex_catalog_entry_slug(spec);
+        (slug != current).then_some(slug)
+    });
+    let Some(surface) = surface else {
+        return Ok(config_text.to_string());
+    };
+
+    doc["model"] = toml_edit::value(surface);
+    Ok(doc.to_string())
+}
+
 /// Generate Codex `model_catalog_json` from provider settings and inject/remove
 /// the top-level TOML field that points Codex to the generated file.
 pub fn prepare_codex_config_text_with_model_catalog(
@@ -1325,6 +1391,10 @@ pub fn prepare_codex_config_text_with_model_catalog(
 
     if let Some(catalog) = codex_model_catalog_from_settings(settings, config_text, profile)? {
         let config_text = set_codex_model_catalog_json_field(config_text, Some(&catalog_path))?;
+        let config_text = rewrite_codex_default_model_to_surface_slug(
+            &config_text,
+            &codex_catalog_model_specs(settings),
+        )?;
         // Disable web_search only for native gateways on the reject blacklist
         // (MiMo/LongCat/MiniMax by host or model brand; Qwen3-Coder by model).
         // Everything else — relays, DouBao, web-search-capable Qwen models,
@@ -4090,9 +4160,11 @@ base_url = "https://production.api/v1"
         .expect("non-empty modelCatalog must yield a catalog");
 
         let entry = &catalog["models"][0];
+        // slug 跟随显示名的 surface 规则（小写）：picker 按 slug 去重合并内置
+        // 官方条目，请求时 Codex 回传 slug，代理再映射回真实模型 id
         assert_eq!(
             entry.get("slug").and_then(|v| v.as_str()),
-            Some("MiniMax-M3")
+            Some("minimax-m3")
         );
         assert_eq!(
             entry.get("shell_type").and_then(|v| v.as_str()),
@@ -4199,14 +4271,15 @@ base_url = "https://production.api/v1"
             };
 
             assert_eq!(modalities("gpt-5.4"), json!(["text", "image"]));
-            assert_eq!(modalities("deepseek/deepseek-v4-pro"), json!(["text"]));
+            // slug 已从真实模型 id 改为显示名的 surface 形式（小写、空白转短横线）
+            assert_eq!(modalities("deepseek-v4-pro"), json!(["text"]));
             assert_eq!(modalities("glm-5.2v"), json!(["text", "image"]));
             assert_eq!(
-                modalities("deepseek-v4-flash"),
+                modalities("explicit-visual-override"),
                 json!(["text", "image"]),
                 "explicit provider metadata must override the text-only registry"
             );
-            assert_eq!(modalities("custom-text-alias"), json!(["text"]));
+            assert_eq!(modalities("explicit-text-override"), json!(["text"]));
         }
     }
 
@@ -4235,6 +4308,80 @@ base_url = "https://production.api/v1"
         assert!(
             base.is_some_and(|s| !s.trim().is_empty()),
             "every native entry must carry a non-empty base_instructions (Codex requires it)"
+        );
+    }
+
+    #[test]
+    fn catalog_slug_follows_display_name_surface_rule() {
+        // picker 按 slug 去重合并内置官方模型（远端覆盖内置）：填了显示名的
+        // 条目 slug 必须是官方风格的小写形式，否则 picker 出现两个同名条目，
+        // 用户选到内置条目即绕过映射。无显示名的条目保持 slug = 真实模型 id。
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "MiniMax-M3", "displayName": "GPT-5.6-Sol" },
+                    { "model": "kimi-k2.7-code" }
+                ]
+            }
+        });
+
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            "",
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("catalog generation should not error")
+        .expect("non-empty modelCatalog must yield a catalog");
+
+        let models = catalog["models"].as_array().expect("models array");
+        assert_eq!(models[0]["slug"], json!("gpt-5.6-sol"));
+        assert_eq!(models[0]["display_name"], json!("GPT-5.6-Sol"));
+        assert_eq!(models[1]["slug"], json!("kimi-k2.7-code"));
+    }
+
+    #[test]
+    fn default_model_rewritten_to_surface_slug_after_catalog_generation() {
+        let specs = vec![
+            CodexCatalogModelSpec {
+                model: "MiniMax-M3".to_string(),
+                display_name: Some("GPT-5.6-Sol".to_string()),
+                context_window: None,
+                supports_parallel_tool_calls: None,
+                input_modalities: None,
+                base_instructions: None,
+            },
+            CodexCatalogModelSpec {
+                model: "MiniMax-M2.7".to_string(),
+                display_name: None,
+                context_window: None,
+                supports_parallel_tool_calls: None,
+                input_modalities: None,
+                base_instructions: None,
+            },
+        ];
+
+        // 顶层 model 命中带显示名的条目 → 改写为 surface slug
+        let rewritten =
+            rewrite_codex_default_model_to_surface_slug("model = \"MiniMax-M3\"\n", &specs)
+                .expect("rewrite should not error");
+        assert!(
+            rewritten.contains("model = \"gpt-5.6-sol\""),
+            "got {rewritten}"
+        );
+
+        // 命中无显示名的条目 → 保持不变
+        let kept =
+            rewrite_codex_default_model_to_surface_slug("model = \"MiniMax-M2.7\"\n", &specs)
+                .expect("rewrite should not error");
+        assert!(kept.contains("model = \"MiniMax-M2.7\""), "got {kept}");
+
+        // 不在目录中 / 已是 surface slug → 保持不变
+        let untouched =
+            rewrite_codex_default_model_to_surface_slug("model = \"gpt-5.6-sol\"\n", &specs)
+                .expect("rewrite should not error");
+        assert!(
+            untouched.contains("model = \"gpt-5.6-sol\""),
+            "got {untouched}"
         );
     }
 
