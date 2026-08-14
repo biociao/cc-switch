@@ -5,7 +5,35 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.19.2+ciao.9] - 2026-08-12
+## [3.19.2+ciao.10] - 2026-08-14
+
+ciao fork patch release on top of `v3.19.2+ciao.9`, focused entirely on the Codex desktop app: bypassing the forced login, and making the in-app model picker actually work with third-party providers. The desktop app now launches with a local synthetic login session, so the overseas phone-number gate no longer blocks usage. Under proxy takeover the picker lists third-party models with native-style display names, and — the headline fix — catalog entry slugs now follow the official naming rule (derived from the display name), so the picker's slug-based merge replaces the built-in official entries instead of coexisting with them; a picker selection is rewritten by the proxy to the real upstream model id, ending the "every choice routes to the default model" regression. Rounding out the release: aggregate providers prefill the six native Codex model names as template rows, MiniMax/Zhipu GLM presets ship real secondary models, malformed catalog rows can no longer be silently dropped on save, and stale aggregate takeover configs missing the `model_provider` structure are repaired automatically.
+
+**Stats**: 11 commits | 32 files changed | +2688 insertions | -131 deletions
+
+<!-- release-notes:zh:start -->
+- **绕过 Codex 桌面端强制登录**：官方登录要求海外手机号验证，阻挡了大部分用户。现在通过本地合成登录会话直接跳过登录门槛，打开即可使用。
+- **修复模型 picker 无论选什么都路由到同一模型**：Codex picker 按 slug 去重合并内置官方列表与远端 catalog，此前我们的条目 slug 用真实模型名（如 `MiniMax-M3`），与内置条目（`gpt-5.6-sol`）并存；选到内置条目时代理白名单不识别，静默回退默认模型。现在 catalog 条目 slug 按显示名生成（与官方命名一致），远端条目直接覆盖内置条目，picker 选择由代理改写为真实上游模型 id。
+- **picker 显示第三方模型的原生风格名称**：预设供应商的模型映射使用 Codex 原生显示名（GPT-5.6-Sol 等），MiniMax/智谱 GLM 预设补充了真实副模型；新建聚合供应商预填 6 个原生模型名模板行，首次配置直接挑选即可。
+- **修复模型映射保存时静默丢行**：model 为空或重复的行此前会被静默丢弃，现在保存时明确报错拦截，避免"配置丢失"的错觉。
+- **修复聚合接管配置缺少 model_provider 结构**：历史遗留的聚合接管配置自动补齐修复。
+- **托盘菜单**：Codex 托盘项改为直接启动桌面应用（启动时刷新模型缓存）。
+<!-- release-notes:zh:end -->
+
+### Added
+
+- **Bypass Forced Desktop Login with a Local Synthetic Session**: the Codex desktop app now requires an official login gated behind overseas phone-number verification. A local synthetic login session lets the app launch straight into the workspace without credentials.
+- **Desktop Picker Lists Third-Party Models Under Proxy Takeover**: provider command auth is projected into the takeover config so the in-app model picker enumerates catalog models, with preset catalogs carrying native-style display names (e.g. GPT-5.6-Sol) and real secondary models for MiniMax and Zhipu GLM presets.
+- **Aggregate Providers Prefill Native Model-Name Template Rows**: creating a new Codex aggregate provider seeds six template rows named after the official Codex models, so the initial mapping is a pick-and-save operation; untouched template rows skip validation.
+
+### Fixed
+
+- **Picker Selections Routed Everywhere to the Default Model**: the desktop picker merges built-in official entries with the remote catalog by slug (remote wins). Catalog slugs previously used the real upstream model id while the native name lived only in `display_name`, so both entries coexisted; picking the built-in one sent the official slug, which the proxy did not recognize and silently fell back to the default model. Catalog slugs now derive from the display name (trim, whitespace → `-`, lowercase), the top-level config `model` is rewritten to the surface slug when it matches a display-named entry, and the proxy's model map accepts both real ids (pass-through) and surface slugs (rewritten to the real upstream model id).
+- **Silent Catalog Row Drops on Provider Save**: rows with an empty or duplicate model id were silently discarded on save, looking like lost configuration; saving now fails loudly with a per-row error.
+- **Aggregate Takeover Configs Missing `model_provider`**: stale takeover projection configs lacking the `model_provider` structure are detected and repaired.
+- **Tray Simplified**: the experimental tray model picker was replaced with a plain "launch Codex" item that refreshes the model cache on start.
+
+---
 
 ciao fork patch release on top of `v3.19.2+ciao.8`, extending the Claude Science proxy fixes to every app and closing out three Kimi/DeepSeek integration regressions. The response-`model` normalization that previously only ran for Claude Science now applies to all apps on every transform path, so upstreams that echo back their own model id (Kimi, GLM, DeepSeek, MiniMax…) no longer leak foreign ids into Claude-side session state. Non-1M upstreams no longer inherit the `context-1m-2025-08-07` beta header: the Science daemon's built-in registry marks `claude-opus-5` / `claude-sonnet-5` as 1M models and auto-attaches that beta, which Kimi k3-256k answers with a hard 401 — the proxy now strips it unless the mapped model explicitly carries the `[1m]` marker or the upstream is Anthropic itself. DeepSeek's native `/anthropic` path now drops malformed `web_search_tool_result` blocks that carry no `tool_use_id` (the Science daemon persists such blocks into history, and DeepSeek's strict deserialization rejected the whole request with a 400); well-formed server tool blocks still pass through untouched. And the "filter empty search results" switch is finally available on Claude Science providers — it was gated on the `claude` app id in both the form's visibility and its save payload, so Science providers could never turn it on and kept emitting bare `Search results for query:` headers.
 
