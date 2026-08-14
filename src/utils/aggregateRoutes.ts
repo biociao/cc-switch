@@ -190,7 +190,11 @@ export function validateAggregateRoutes(
     for (const row of rows) {
       // 未动过的预填模板行（key 为预填模型名，provider/model 均未选）跳过校验，
       // 归一化阶段也会被丢弃——用户没被强迫配置每一个预填模型。
-      if (row.template === true && !row.providerId.trim() && !row.model.trim()) {
+      if (
+        row.template === true &&
+        !row.providerId.trim() &&
+        !row.model.trim()
+      ) {
         continue;
       }
       const filled = [

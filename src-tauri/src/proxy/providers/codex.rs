@@ -299,7 +299,8 @@ fn codex_provider_catalog_model_map(provider: &Provider) -> HashMap<String, Stri
         else {
             continue;
         };
-        map.entry(model.to_string()).or_insert_with(|| model.to_string());
+        map.entry(model.to_string())
+            .or_insert_with(|| model.to_string());
     }
     for model_config in models {
         let Some(model) = model_config
